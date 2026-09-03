@@ -16,7 +16,7 @@ class StoreSourceRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
-            'type' => ['required', Rule::in(['rss', 'website', 'news', 'blog', 'social', 'tv', 'other'])],
+            'type' => ['required', Rule::in(['rss', 'website', 'news', 'blog', 'social', 'tv', 'other', 'tiktok', 'facebook', 'instagram', 'twitter (x)', 'web'])],
             'url' => ['required', 'url', 'max:500'],
             'country' => ['sometimes', 'string', 'max:10'],
             'language' => ['sometimes', 'string', 'max:10'],

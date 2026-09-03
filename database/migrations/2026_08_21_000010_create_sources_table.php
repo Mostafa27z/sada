@@ -13,7 +13,7 @@ return new class extends Migration
             $table->foreignId('tenant_id')->nullable()->constrained()->cascadeOnDelete();
             $table->string('name');
             $table->string('slug');
-            $table->enum('type', ['rss', 'website', 'news', 'blog', 'social', 'tv', 'other'])->default('news');
+            $table->enum('type', ['rss', 'website', 'news', 'blog', 'social', 'tv', 'other', 'tiktok', 'facebook', 'instagram', 'twitter (x)', 'web'])->default('news');
             $table->string('url');
             $table->string('country', 10)->default('SA');
             $table->string('language', 10)->default('ar');

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sada API Documentation - Analytics & Social Listening</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --card-bg: #1e293b;
+            --accent-blue: #38bdf8;
+            --accent-purple: #818cf8;
+            --accent-green: #34d399;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --code-bg: #090d16;
+            --border-color: #334155;
+            --badge-get: #0ea5e9;
+            --badge-post: #10b981;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        header {
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 2rem;
+            margin-bottom: 2.5rem;
+        }
+
+        h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        p.subtitle {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+        }
+
+        .auth-card {
+            background-color: rgba(56, 189, 248, 0.05);
+            border: 1px solid rgba(56, 189, 248, 0.2);
+            border-radius: 12px;
+            padding: 1.25rem;
+            margin-bottom: 2rem;
+        }
+
+        .auth-card h3 {
+            color: var(--accent-blue);
+            font-size: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .section-title {
+            font-size: 1.5rem;
+            color: var(--text-main);
+            margin: 2rem 0 1rem;
+            border-left: 4px solid var(--accent-blue);
+            padding-left: 0.75rem;
+        }
+
+        .endpoint-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }
+
+        .endpoint-header {
+            padding: 1rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+
+        .method {
+            font-weight: 700;
+            font-size: 0.85rem;
+            padding: 0.3rem 0.75rem;
+            border-radius: 6px;
+            text-transform: uppercase;
+            color: #fff;
+        }
+
+        .method.get { background-color: var(--badge-get); }
+        .method.post { background-color: var(--badge-post); }
+
+        .url {
+            font-family: monospace;
+            font-size: 1.05rem;
+            color: var(--text-main);
+            font-weight: 600;
+        }
+
+        .endpoint-body {
+            padding: 1.5rem;
+        }
+
+        .endpoint-desc {
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+        }
+
+        .code-block {
+            background-color: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Fira Code', monospace, sans-serif;
+            font-size: 0.9rem;
+            color: #e2e8f0;
+            overflow-x: auto;
+            margin-top: 0.5rem;
+            margin-bottom: 1rem;
+            white-space: pre-wrap;
+        }
+
+        .label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--accent-purple);
+            margin-top: 1rem;
+            display: block;
+        }
+
+        footer {
+            margin-top: 4rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            border-top: 1px solid var(--border-color);
+            padding-top: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Sada Platform API Documentation</h1>
+            <p class="subtitle">Analytics & AI Microservice Endpoints (Keywords, URL Comment Scraper & Tenant Keywords Management)</p>
+        </header>
+
+        <div class="auth-card">
+            <h3>🔑 Authentication Requirement</h3>
+            <p>All endpoints require a Bearer token in the HTTP Header:</p>
+            <div class="code-block">Authorization: Bearer 1|NlltBWufci3a9nBEooiFpcIcy7LY3VBdVc2BvLgfd3dbdc69
+Content-Type: application/json
+Accept: application/json</div>
+        </div>
+
+        <h2 class="section-title">1. Keywords Management</h2>
+
+        <div class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="url">/api/v1/keywords</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">Add a new keyword to the current active tenant monitoring list.</div>
+                <span class="label">Request Payload</span>
+                <div class="code-block">{
+    "name": "الذكاء الاصطناعي",
+    "priority": "high",
+    "match_type": "contains",
+    "language": "ar"
+}</div>
+                <span class="label">cURL Example</span>
+                <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/keywords' \
+--header 'Content-Type: application/json' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN' \
+--data '{
+    "name": "الذكاء الاصطناعي",
+    "priority": "high",
+    "match_type": "contains",
+    "language": "ar"
+}'</div>
+            </div>
+        </div>
+
+        <div class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="url">/api/v1/keywords</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">Retrieve all registered keywords for the current active tenant.</div>
+                <span class="label">cURL Example</span>
+                <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/keywords' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN'</div>
+            </div>
+        </div>
+
+        <h2 class="section-title">2. Analytics by Keywords (Social Listening)</h2>
+
+        <div class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="url">/api/v1/keywords/trigger-scrape</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">Trigger async keyword scraping & AI sentiment analytics. If <code>keywords</code> array is empty or omitted, it automatically fetches all active keywords registered for the tenant. Optional <code>country</code> parameter filters posts by region (e.g., "Saudi Arabia").</div>
+                <span class="label">Request Payload (Option A: Auto-use Tenant Keywords)</span>
+                <div class="code-block">{
+    "platforms": ["instagram", "facebook", "x", "tiktok"],
+    "country": "Saudi Arabia"
+}</div>
+                <span class="label">Request Payload (Option B: Explicit Keywords)</span>
+                <div class="code-block">{
+    "keywords": ["الذكاء الاصطناعي", "الرياض"],
+    "platforms": ["instagram", "facebook", "x", "tiktok"],
+    "country": "Saudi Arabia"
+}</div>
+                <span class="label">cURL Example</span>
+                <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/keywords/trigger-scrape' \
+--header 'Content-Type: application/json' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN' \
+--data '{
+    "platforms": ["instagram", "facebook", "x", "tiktok"],
+    "country": "Saudi Arabia"
+}'</div>
+            </div>
+        </div>
+
+        <div class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="url">/api/v1/articles</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">Fetch scraped posts/articles along with their sentiment analytics. Filterable by source, language, and search terms.</div>
+                <span class="label">cURL Example</span>
+                <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/articles' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN'</div>
+            </div>
+        </div>
+
+        <h2 class="section-title">3. Analytics by Post Link (Comments & Sentiment)</h2>
+
+        <div class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="url">/api/v1/comments/scrape</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">Receive post URLs across social media platforms, scrape comments, perform AI sentiment analysis, and save them.</div>
+                <span class="label">Request Payload</span>
+                <div class="code-block">{
+    "insta_urls": ["https://www.instagram.com/p/ExamplePost/"],
+    "facebook_urls": [],
+    "tiktok_urls": [],
+    "twitter_urls": []
+}</div>
+                <span class="label">cURL Example</span>
+                <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/comments/scrape' \
+--header 'Content-Type: application/json' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN' \
+--data '{
+    "insta_urls": ["https://www.instagram.com/p/ExamplePost/"]
+}'</div>
+            </div>
+        </div>
+
+        <div class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="url">/api/v1/comments</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">Fetch stored comments along with their extracted sentiment (positive, negative, neutral) and sentiment score.</div>
+                <span class="label">cURL Example</span>
+                <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/comments' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN'</div>
+            </div>
+        </div>
+
+        <footer>
+            Sada Intelligence Platform &copy; 2026 - AI Social Listening & Sentiment Analytics
+        </footer>
+    </div>
+</body>
+</html>

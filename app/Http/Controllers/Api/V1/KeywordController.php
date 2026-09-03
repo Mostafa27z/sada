@@ -132,4 +132,40 @@ class KeywordController extends Controller
         $keyword->update(['status' => Keyword::STATUS_ARCHIVED]);
         return $this->success(new KeywordResource($keyword));
     }
+
+    /**
+     * Trigger asynchronous AI keyword scraping across platforms.
+     */
+    public function triggerScrape(\Illuminate\Http\Request $request)
+    {
+        $request->validate([
+            'keywords' => ['nullable', 'array'],
+            'keywords.*' => ['string'],
+            'platforms' => ['sometimes', 'array'],
+            'country' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        $tenantId = \App\Support\TenantContext::getTenantId();
+        if (!$tenantId) {
+            return $this->error(__('messages.forbidden'), 403);
+        }
+
+        $keywords = $request->input('keywords', []);
+        if (empty($keywords)) {
+            $keywords = Keyword::where('status', Keyword::STATUS_ACTIVE)->pluck('name')->toArray();
+        }
+
+        if (empty($keywords)) {
+            return $this->error('No active keywords found for this tenant.', 422);
+        }
+
+        \App\Jobs\ScrapeKeywordsJob::dispatch(
+            $tenantId,
+            $keywords,
+            $request->get('platforms', ['instagram', 'facebook', 'x', 'tiktok']),
+            $request->get('country')
+        );
+
+        return $this->success(null, 'Keyword scraping task queued successfully.', 202);
+    }
 }

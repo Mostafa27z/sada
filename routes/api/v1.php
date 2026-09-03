@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\ArticleController;
 use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\CollectionController;
+use App\Http\Controllers\Api\V1\CommentController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\KeywordController;
 use App\Http\Controllers\Api\V1\PlanController;
@@ -160,12 +161,17 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // Keywords Module
         Route::get('/keywords', [KeywordController::class, 'index']);
         Route::post('/keywords', [KeywordController::class, 'store'])->middleware('limit:keywords');
+        Route::post('/keywords/trigger-scrape', [KeywordController::class, 'triggerScrape']);
         Route::get('/keywords/{id}', [KeywordController::class, 'show']);
         Route::put('/keywords/{id}', [KeywordController::class, 'update']);
         Route::delete('/keywords/{id}', [KeywordController::class, 'destroy']);
         Route::post('/keywords/{id}/activate', [KeywordController::class, 'activate']);
         Route::post('/keywords/{id}/pause', [KeywordController::class, 'pause']);
         Route::post('/keywords/{id}/archive', [KeywordController::class, 'archive']);
+
+        // Comments Module
+        Route::get('/comments', [CommentController::class, 'index']);
+        Route::post('/comments/scrape', [CommentController::class, 'scrape']);
 
         // Sources Module
         Route::get('/sources', [SourceController::class, 'index']);
