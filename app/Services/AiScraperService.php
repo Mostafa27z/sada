@@ -33,7 +33,7 @@ class AiScraperService
                 $payload['country'] = $country;
             }
 
-            $response = Http::timeout($this->timeout)->post($url, $payload);
+            $response = Http::connectTimeout(10)->timeout($this->timeout)->post($url, $payload);
 
             if ($response->successful()) {
                 return $response->json();
@@ -73,7 +73,7 @@ class AiScraperService
         ];
 
         try {
-            $response = Http::timeout($this->timeout)->post($url, $payload);
+            $response = Http::connectTimeout(10)->timeout($this->timeout)->post($url, $payload);
 
             if ($response->successful()) {
                 return $response->json();

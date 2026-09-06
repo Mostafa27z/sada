@@ -18,7 +18,8 @@ class ScrapeKeywordsJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $timeout = 180;
+    public int $tries = 3;
+    public int $timeout = 600;
 
     public function __construct(
         public int $tenantId,
@@ -62,7 +63,7 @@ class ScrapeKeywordsJob implements ShouldQueue
                     $author = $post['author'] ?? 'Unknown User';
                     $content = $post['text'] ?? '';
                     $url = $post['url'] ?? ('https://' . $platformName . '.com/post/' . ($postId ?: md5($content)));
-                    $countryCode = $post['country'] ?? $this->country ?? 'SA';
+                    $countryCode = mb_substr($post['country'] ?? $this->country ?? 'SA', 0, 10);
                     $createdAt = !empty($post['created_at']) ? date('Y-m-d H:i:s', strtotime($post['created_at'])) : now();
                 } else {
                     $lines = explode("\n", trim((string)$post));
@@ -71,7 +72,7 @@ class ScrapeKeywordsJob implements ShouldQueue
                     $postId = md5((string)$post);
                     $externalId = "{$platformName}_{$postId}";
                     $url = 'https://' . $platformName . '.com/post/' . $postId;
-                    $countryCode = $this->country ?? 'SA';
+                    $countryCode = mb_substr($this->country ?? 'SA', 0, 10);
                     $createdAt = now();
                 }
 
