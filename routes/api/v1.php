@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\SuperAdminController;
 use App\Http\Controllers\Api\V1\TenantController;
 use App\Http\Controllers\Api\V1\TenantUserController;
+use App\Http\Controllers\Api\V1\TrendController;
 use App\Http\Controllers\Api\V1\UserRoleController;
 use App\Http\Controllers\Api\V1\WebhookController;
 use Illuminate\Support\Facades\Route;
@@ -172,6 +173,14 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // Comments Module
         Route::get('/comments', [CommentController::class, 'index']);
         Route::post('/comments/scrape', [CommentController::class, 'scrape']);
+
+        // Topic Trends Discovery Module
+        Route::prefix('trends')->group(function () {
+            Route::get('/', [TrendController::class, 'index']);
+            Route::post('/analyze', [TrendController::class, 'analyze']);
+            Route::get('/{id}', [TrendController::class, 'show']);
+            Route::delete('/{id}', [TrendController::class, 'destroy']);
+        });
 
         // Sources Module
         Route::get('/sources', [SourceController::class, 'index']);

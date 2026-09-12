@@ -2,54 +2,72 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class AiScraperService
 {
-    protected string $baseUrl;
-    protected int $timeout;
-
-    public function __construct()
-    {
-        $this->baseUrl = config('microservice.url', 'http://127.0.0.1:8000');
-        $this->timeout = config('microservice.timeout', 120);
-    }
+    public function __construct(
+        protected ApifyScraperService $apifyService,
+        protected GeminiAnalyticsService $geminiService
+    ) {}
 
     /**
-     * Scrape posts and generate sentiment analytics by keywords across platforms.
+     * Scrape posts and generate sentiment analytics by keywords across platforms natively.
      */
     public function scrapeByKeywords(array $keywords, array $platforms = ['instagram', 'facebook', 'x', 'tiktok'], ?string $country = null): array
     {
-        $url = rtrim($this->baseUrl, '/') . '/analyze-by-keywords';
-
-        try {
-            $payload = [
-                'keywords' => $keywords,
-                'platforms' => $platforms,
-            ];
-
-            if ($country) {
-                $payload['country'] = $country;
-            }
-
-            $response = Http::connectTimeout(10)->timeout($this->timeout)->post($url, $payload);
-
-            if ($response->successful()) {
-                return $response->json();
-            }
-
-            Log::error('AI Microservice error on scrapeByKeywords', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
-
+        if (empty($keywords)) {
             return [
                 'status' => 'error',
-                'message' => 'Failed to retrieve keyword scrape results from AI microservice.',
+                'message' => 'No keywords provided.',
+            ];
+        }
+
+        $instaPosts = [];
+        $fbPosts = [];
+        $xPosts = [];
+        $tiktokPosts = [];
+
+        try {
+            if (in_array('instagram', $platforms)) {
+                $instaPosts = $this->apifyService->fetchInstagramByKeywords($keywords, 10, $country);
+            }
+            if (in_array('facebook', $platforms)) {
+                $fbPosts = $this->apifyService->fetchFacebookByKeywords($keywords, 10, $country);
+            }
+            if (in_array('x', $platforms)) {
+                $xPosts = $this->apifyService->fetchXByKeywords($keywords, 10, $country);
+            }
+            if (in_array('tiktok', $platforms)) {
+                $tiktokPosts = $this->apifyService->fetchTiktokByKeywords($keywords, 10, $country);
+            }
+
+            $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
+
+            if (empty($allPosts)) {
+                return [
+                    'status' => 'error',
+                    'message' => 'No posts found for the specified keywords.',
+                ];
+            }
+
+            // Run Gemini sentiment analysis on fetched posts
+            $analyticsJson = $this->geminiService->analyzeSentiment($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
+
+            return [
+                'status' => 'success',
+                'query_keywords' => $keywords,
+                'total_posts_count' => count($allPosts),
+                'posts_by_platform' => [
+                    'instagram_posts' => $instaPosts,
+                    'facebook_posts' => $fbPosts,
+                    'x_posts' => $xPosts,
+                    'tiktok_posts' => $tiktokPosts,
+                ],
+                'analytics' => $analyticsJson,
             ];
         } catch (\Exception $e) {
-            Log::error('AI Microservice exception on scrapeByKeywords: ' . $e->getMessage());
+            Log::error('Native AiScraperService exception on scrapeByKeywords: ' . $e->getMessage());
 
             return [
                 'status' => 'error',
@@ -59,37 +77,46 @@ class AiScraperService
     }
 
     /**
-     * Scrape post comments and sentiment analytics by URLs.
+     * Scrape post comments and sentiment analytics by URLs natively.
      */
     public function scrapePostComments(array $urlsByPlatform): array
     {
-        $url = rtrim($this->baseUrl, '/') . '/analyze';
-
-        $payload = [
-            'insta_urls' => $urlsByPlatform['insta_urls'] ?? $urlsByPlatform['instagram'] ?? [],
-            'facebook_urls' => $urlsByPlatform['facebook_urls'] ?? $urlsByPlatform['facebook'] ?? [],
-            'tiktok_urls' => $urlsByPlatform['tiktok_urls'] ?? $urlsByPlatform['tiktok'] ?? [],
-            'twitter_urls' => $urlsByPlatform['twitter_urls'] ?? $urlsByPlatform['twitter'] ?? $urlsByPlatform['x'] ?? [],
-        ];
+        $instaUrls = $urlsByPlatform['insta_urls'] ?? $urlsByPlatform['instagram'] ?? [];
+        $fbUrls = $urlsByPlatform['facebook_urls'] ?? $urlsByPlatform['facebook'] ?? [];
+        $tiktokUrls = $urlsByPlatform['tiktok_urls'] ?? $urlsByPlatform['tiktok'] ?? [];
+        $twitterUrls = $urlsByPlatform['twitter_urls'] ?? $urlsByPlatform['twitter'] ?? $urlsByPlatform['x'] ?? [];
 
         try {
-            $response = Http::connectTimeout(10)->timeout($this->timeout)->post($url, $payload);
+            $instaComments = !empty($instaUrls) ? $this->apifyService->fetchInstagramComments($instaUrls) : [];
+            $fbComments = !empty($fbUrls) ? $this->apifyService->fetchFacebookComments($fbUrls) : [];
+            $tiktokComments = !empty($tiktokUrls) ? $this->apifyService->fetchTiktokComments($tiktokUrls) : [];
+            $twitterComments = !empty($twitterUrls) ? $this->apifyService->fetchTwitterComments($twitterUrls) : [];
 
-            if ($response->successful()) {
-                return $response->json();
+            $allComments = array_merge($instaComments, $fbComments, $tiktokComments, $twitterComments);
+
+            if (empty($allComments)) {
+                return [
+                    'status' => 'error',
+                    'message' => 'No comments found for the provided post URLs.',
+                ];
             }
 
-            Log::error('AI Microservice error on scrapePostComments', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
+            // Run Gemini sentiment analysis on fetched comments
+            $analyticsJson = $this->geminiService->analyzeSentiment($instaComments, $fbComments, $twitterComments, $tiktokComments);
 
             return [
-                'status' => 'error',
-                'message' => 'Failed to retrieve post comments from AI microservice.',
+                'status' => 'success',
+                'total_comments_count' => count($allComments),
+                'comments_by_platform' => [
+                    'instagram_comments' => $instaComments,
+                    'facebook_comments' => $fbComments,
+                    'tiktok_comments' => $tiktokComments,
+                    'twitter_comments' => $twitterComments,
+                ],
+                'analytics' => $analyticsJson,
             ];
         } catch (\Exception $e) {
-            Log::error('AI Microservice exception on scrapePostComments: ' . $e->getMessage());
+            Log::error('Native AiScraperService exception on scrapePostComments: ' . $e->getMessage());
 
             return [
                 'status' => 'error',

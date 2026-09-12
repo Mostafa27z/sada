@@ -430,6 +430,13 @@
             <a href="#dashboard-stats" class="nav-link">Dashboard Stats <span class="nav-tag get">GET</span></a>
             <a href="#analytics-sentiment" class="nav-link">Sentiment Breakdown <span class="nav-tag get">GET</span></a>
         </div>
+
+        <div class="nav-group">
+            <div class="nav-header">7. Topic Trends Discovery</div>
+            <a href="#trends-analyze" class="nav-link">Analyze Topic <span class="nav-tag post">POST</span></a>
+            <a href="#trends-show" class="nav-link">Get Trend Data <span class="nav-tag get">GET</span></a>
+            <a href="#trends-list" class="nav-link">List Past Trends <span class="nav-tag get">GET</span></a>
+        </div>
     </aside>
 
     <!-- Main Content -->
@@ -729,6 +736,157 @@ X-Tenant-ID: 1</div>
                 <div class="code-container">
                     <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                     <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/analytics/sentiment' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN'</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 7. Topic Trends Discovery & AI Analysis -->
+        <div class="section-title"><span class="number">7</span> Topic Trends Discovery & AI Analysis</div>
+
+        <div id="trends-analyze" class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="url">/trends/analyze</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">
+                    Trigger AI-powered trend discovery for any industry or topic. Generates relevant keywords/hashtags, scrapes posts across <strong>Facebook, Instagram, TikTok, and Twitter (SA/EG)</strong> with customizable limits (e.g. 50, 100, 250+ posts), and clusters them into major trends with sentiment classification, summaries, actionable crisis solutions, and marketing strategies.
+                    <br><br>
+                    <strong>Queue Execution (Default):</strong> Returns HTTP <code>202 Accepted</code> with a task ID. The scraping job runs in the background. Poll <code>GET /trends/{id}</code> for completed results.
+                </div>
+                
+                <span class="label">Request Payload Parameters</span>
+                <div class="endpoint-desc" style="font-size: 0.88rem; color: #cbd5e1;">
+                    &bull; <code>topic</code> (string, required): The target industry or topic (e.g. "الذكاء الاصطناعي في التعليم", "Fintech in Saudi Arabia").<br>
+                    &bull; <code>limit</code> (integer, optional, default: 50): Number of posts to scrape per platform (supports 10, 50, 100, 250, up to 500).<br>
+                    &bull; <code>platforms</code> (array, optional): Target platforms (e.g. <code>["facebook", "instagram", "tiktok", "twitter"]</code>).<br>
+                    &bull; <code>sync</code> (boolean, optional, default: false): If true, runs synchronously (requires high server timeout).
+                </div>
+
+                <span class="label">cURL Example (Queue Dispatched)</span>
+                <div class="code-container">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/trends/analyze' \
+--header 'Content-Type: application/json' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN' \
+--data '{
+    "topic": "الذكاء الاصطناعي في التعليم",
+    "limit": 100,
+    "platforms": ["facebook", "instagram", "tiktok", "twitter"]
+}'</div>
+                </div>
+
+                <span class="label">Response Sample (202 Accepted)</span>
+                <div class="code-container">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <div class="code-block">{
+    "success": true,
+    "message": "Trend discovery task queued successfully.",
+    "data": {
+        "id": 1,
+        "topic": "الذكاء الاصطناعي في التعليم",
+        "status": "pending",
+        "limit": 100,
+        "platforms": ["facebook", "instagram", "tiktok", "twitter"],
+        "keywords": null,
+        "hashtags": null,
+        "raw_data_count": 0,
+        "trends_count": 0,
+        "trends_analysis": null,
+        "error_message": null,
+        "created_at": "2026-09-11T00:00:00.000000Z",
+        "updated_at": "2026-09-11T00:00:00.000000Z"
+    }
+}</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="trends-show" class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="url">/trends/{id}</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">Poll status or fetch complete results of a topic trend discovery job. When <code>status</code> is <code>completed</code>, it returns the generated keywords/hashtags, total posts scraped, and clustered trends with actionable crisis solutions or marketing growth strategies.</div>
+                
+                <span class="label">cURL Example</span>
+                <div class="code-container">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/trends/1' \
+--header 'Accept: application/json' \
+--header 'Authorization: Bearer YOUR_BEARER_TOKEN'</div>
+                </div>
+
+                <span class="label">Response Sample (Completed Trend Analysis)</span>
+                <div class="code-container">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <div class="code-block">{
+    "success": true,
+    "message": null,
+    "data": {
+        "id": 1,
+        "topic": "الذكاء الاصطناعي في التعليم",
+        "status": "completed",
+        "limit": 100,
+        "platforms": ["facebook", "instagram", "tiktok", "twitter"],
+        "keywords": ["الذكاء الاصطناعي", "تطبيقات التعليم", "AI Education"],
+        "hashtags": ["#ذكاء_اصطناعي", "#تعليم_رقمي", "#EdTech"],
+        "raw_data_count": 142,
+        "trends_count": 2,
+        "trends_analysis": [
+            {
+                "trend_title": "مخاوف دقة ونزاهة التصحيح الآلي للاختبارات",
+                "platforms": ["facebook", "tiktok"],
+                "sentiment": "سلبي",
+                "trend_summary": "جدل متصاعد بين أولياء الأمور والمعلمين حول عدالة الدرجات المعطاة بواسطة خوارزميات التصحيح التلقائي.",
+                "actionable_solutions": [
+                    "اعتماد نموذج تقييم هجين يجمع بين الفحص الآلي والمراجعة اليدوية للمعلم.",
+                    "نشر دليل إرشادي يوضح للطلاب كيفية احتساب الدرجات ومعايير النموذج.",
+                    "إتاحة آلية واضحة للاعتراض والمراجعة اليدوية للنتائج المشكوك فيها."
+                ],
+                "positive_strategy": null
+            },
+            {
+                "trend_title": "إقبال متزايد على المساعدين الشخصيين للدروس التفاعلية",
+                "platforms": ["instagram", "twitter"],
+                "sentiment": "إيجابي",
+                "trend_summary": "إشادة واسعة بتطبيقات المساعد الذكي التي تقدم شروحات مخصصة لكل طالب وفق وتيرة تعلمه.",
+                "actionable_solutions": null,
+                "positive_strategy": "إطلاق حملة تسويقية تبرز تجارب نجاح واقعية للطلاب وتوفير فترة تجريبية مجانية للمدارس."
+            }
+        ],
+        "error_message": null,
+        "created_at": "2026-09-11T00:00:00.000000Z",
+        "updated_at": "2026-09-11T00:01:25.000000Z"
+    }
+}</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="trends-list" class="endpoint-card">
+            <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="url">/trends</span>
+            </div>
+            <div class="endpoint-body">
+                <div class="endpoint-desc">List all historical topic trend analyses performed within the active workspace with search and pagination.</div>
+                
+                <span class="label">Query Parameters</span>
+                <div class="endpoint-desc" style="font-size: 0.88rem; color: #cbd5e1;">
+                    &bull; <code>search</code> (optional): Filter topics by search keyword.<br>
+                    &bull; <code>status</code> (optional): Filter by status (<code>pending</code>, <code>processing</code>, <code>completed</code>, <code>failed</code>).<br>
+                    &bull; <code>per_page</code> (optional, default: 15): Number of items per page.
+                </div>
+
+                <span class="label">cURL Example</span>
+                <div class="code-container">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <div class="code-block">curl --location 'http://127.0.0.1:8000/api/v1/trends?per_page=10' \
 --header 'Accept: application/json' \
 --header 'Authorization: Bearer YOUR_BEARER_TOKEN'</div>
                 </div>
