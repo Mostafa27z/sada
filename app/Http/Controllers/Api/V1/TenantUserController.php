@@ -52,12 +52,48 @@ class TenantUserController extends Controller
         $user = $this->tenantService->inviteUser(
             $tenant,
             $request->validated('email'),
-            $request->validated('name')
+            $request->validated('name'),
+            $request->validated('phone'),
+            $request->validated('status')
         );
 
         return $this->created(
             new UserResource($user),
             __('messages.user_invited')
+        );
+    }
+
+    /**
+     * Update user details in the tenant context.
+     */
+    public function update(Request $request, int $userId): JsonResponse
+    {
+        $tenant = TenantContext::getTenant();
+
+        if (!$tenant) {
+            return $this->error(__('messages.tenant_not_resolved'), 400);
+        }
+
+        $userToUpdate = TenantContext::withoutTenancy(function () use ($userId) {
+            return User::find($userId);
+        });
+
+        if (!$userToUpdate || !$userToUpdate->belongsToTenant($tenant->id)) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        $data = $request->validate([
+            'name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'email' => ['sometimes', 'nullable', 'string', 'email', 'max:255'],
+            'phone' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'status' => ['sometimes', 'nullable', 'string', 'in:active,inactive,suspended,invited'],
+        ]);
+
+        $updatedUser = $this->tenantService->updateUser($tenant, $userToUpdate, $data);
+
+        return $this->success(
+            new UserResource($updatedUser),
+            __('messages.updated_successfully')
         );
     }
 

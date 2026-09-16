@@ -49,7 +49,11 @@ Route::prefix('auth')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+    Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+    Route::post('/email/send-otp', [AuthController::class, 'sendEmailOtp']);
+    Route::post('/email/verify-otp', [AuthController::class, 'verifyEmailOtp']);
+    Route::post('/email/resend', [AuthController::class, 'resendVerification']);
 });
 
 // SaaS Plans (Public / Authenticated)
@@ -114,6 +118,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // Users in active tenant
         Route::get('/users', [TenantUserController::class, 'index']);
         Route::post('/users/invite', [TenantUserController::class, 'invite'])->middleware('limit:users');
+        Route::match(['put', 'patch'], '/users/{user}', [TenantUserController::class, 'update']);
         Route::delete('/users/{user}', [TenantUserController::class, 'remove']);
         Route::post('/users/{user}/roles', [UserRoleController::class, 'assignRole']);
 
@@ -173,6 +178,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // Comments Module
         Route::get('/comments', [CommentController::class, 'index']);
         Route::post('/comments/scrape', [CommentController::class, 'scrape']);
+        Route::post('/comments/ai-recommendation', [CommentController::class, 'generateAiRecommendation']);
 
         // Topic Trends Discovery Module
         Route::prefix('trends')->group(function () {
@@ -199,6 +205,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/collections/{id}', [CollectionController::class, 'show']);
         Route::put('/collections/{id}', [CollectionController::class, 'update']);
         Route::delete('/collections/{id}', [CollectionController::class, 'destroy']);
+        Route::post('/collections/{id}/sync', [CollectionController::class, 'sync']);
         Route::post('/collections/{id}/articles/{articleId}', [CollectionController::class, 'addArticle']);
         Route::delete('/collections/{id}/articles/{articleId}', [CollectionController::class, 'removeArticle']);
     });

@@ -12,7 +12,7 @@ class ApifyScraperService
 
     public function __construct()
     {
-        $this->token = env('APIFY_TOKEN_2') ?: env('APIFY_TOKEN', '');
+        $this->token = config('services.apify.token') ?: env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2') ?: '';
     }
 
     /**
@@ -90,10 +90,14 @@ class ApifyScraperService
 
     public function fetchXByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
-        $queryKeywords = $keywords;
-        if ($country) {
-            $queryKeywords = array_map(fn($kw) => "{$kw} near:\"{$country}\"", $keywords);
-        }
+        $sinceDate = date('Y-m-d', strtotime('-2 days'));
+        $queryKeywords = array_map(function($kw) use ($country, $sinceDate) {
+            $kw = trim($kw);
+            if (str_contains($kw, ' ') && !str_starts_with($kw, '"') && !str_starts_with($kw, '#')) {
+                $kw = "\"{$kw}\"";
+            }
+            return "{$kw} since:{$sinceDate}";
+        }, $keywords);
 
         $input = [
             "keywords" => $queryKeywords,
@@ -105,16 +109,36 @@ class ApifyScraperService
 
         $items = $this->runActorAndFetchItems("8CiMefkv2yLlD7vYl", $input);
         $results = [];
+        $cutoffTime = time() - (48 * 3600); // Strict 48h recency cutoff (today and yesterday only)
 
         foreach ($items as $item) {
             $postId = (string)($item['id'] ?? $item['tweet_id'] ?? md5(json_encode($item)));
             $author = $item['author_name'] ?? $item['username'] ?? 'Unknown User';
             $text = $item['text'] ?? '';
-            $createdAt = $item['created_at'] ?? '';
+            $rawCreatedAt = $item['created_at'] ?? $item['date'] ?? '';
             $username = $item['author_username'] ?? $item['username'] ?? 'x';
             $url = $item['url'] ?? $item['tweet_url'] ?? "https://x.com/{$username}/status/{$postId}";
 
+            $tsVal = $this->parseSocialTimestamp($rawCreatedAt);
+            if ($tsVal && $tsVal < $cutoffTime) {
+                continue; // Skip tweets older than 48 hours
+            }
+
+            $createdAt = $tsVal ? date('Y-m-d H:i:s', $tsVal) : ($rawCreatedAt ?: date('Y-m-d H:i:s'));
+
+            $matchedKw = null;
+            foreach ($keywords as $k) {
+                if (mb_stripos($text, trim($k)) !== false) {
+                    $matchedKw = trim($k);
+                    break;
+                }
+            }
+            if (!$matchedKw) {
+                $matchedKw = trim($keywords[0] ?? '');
+            }
+
             $results[] = [
+                "keyword" => $matchedKw,
                 "post_id" => $postId,
                 "external_id" => "x_{$postId}",
                 "author" => $author,
@@ -173,15 +197,16 @@ class ApifyScraperService
     public function fetchTiktokByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
         $input = [
-            "maxItems" => $maxItems,
+            "maxItems" => max(15, $maxItems * 2),
             "keywords" => $keywords,
-            "dateRange" => "DEFAULT",
-            "sortType" => "RELEVANCE",
+            "dateRange" => "THIS_MONTH",
+            "sortType" => "DATE_POSTED",
             "customMapFunction" => "(object) => { return {...object} }",
         ];
 
         $items = $this->runActorAndFetchItems("I9kHWwkx0b4giERt0", $input);
         $results = [];
+        $cutoffTime = time() - (30 * 86400);
 
         foreach ($items as $item) {
             $channel = $item['channel'] ?? [];
@@ -190,6 +215,19 @@ class ApifyScraperService
             $createdAt = $item['uploadedAtFormatted'] ?? $item['createTime'] ?? '';
             $videoId = (string)($item['id'] ?? $item['videoId'] ?? md5(json_encode($item)));
             $url = $item['webVideoUrl'] ?? $item['url'] ?? "https://www.tiktok.com/@{$username}/video/{$videoId}";
+
+            // Freshness validation
+            $rawTime = $item['createTime'] ?? $item['uploadedAt'] ?? null;
+            $tsVal = null;
+            if (is_numeric($rawTime)) {
+                $tsVal = intval($rawTime) > 9999999999 ? intval($rawTime / 1000) : intval($rawTime);
+            } elseif (!empty($createdAt)) {
+                $tsVal = strtotime($createdAt);
+            }
+
+            if ($tsVal && $tsVal < $cutoffTime) {
+                continue;
+            }
 
             $locationCreated = strtolower((string)($item['locationCreated'] ?? ''));
             if ($country && $locationCreated && !str_contains($locationCreated, strtolower($country))) {
@@ -202,52 +240,91 @@ class ApifyScraperService
                 "author" => $username,
                 "text" => $text,
                 "url" => $url,
-                "created_at" => $createdAt,
+                "created_at" => $tsVal ? date('Y-m-d H:i:s', $tsVal) : ($createdAt ?: date('Y-m-d H:i:s')),
                 "platform" => "tiktok",
                 "country" => $country ?? "SA"
             ];
+
+            if (count($results) >= $maxItems) {
+                break;
+            }
         }
+
+        usort($results, function ($a, $b) {
+            return strtotime($b['created_at'] ?? 'now') <=> strtotime($a['created_at'] ?? 'now');
+        });
 
         return $results;
     }
 
     public function fetchFacebookByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
-        $input = [
-            "query" => implode("  ", $keywords),
-            "resultsCount" => $maxItems,
-            "searchType" => "latest",
-        ];
-
-        if ($country) {
-            $input["location"] = $country;
+        $allResults = [];
+        $cleanKeywords = array_values(array_filter(array_map('trim', $keywords)));
+        if (empty($cleanKeywords)) {
+            return [];
         }
 
-        $items = $this->runActorAndFetchItems("TMBawM4LZpKN15DZX", $input);
-        $results = [];
+        $cutoffTime = time() - (7 * 86400); // 7-day freshness cutoff
+        $perKwLimit = max(5, intval(ceil($maxItems / count($cleanKeywords))));
 
-        foreach ($items as $item) {
-            $authorData = $item['author'] ?? [];
-            $author = $authorData['name'] ?? 'Unknown';
-            $text = $item['postText'] ?? $item['text'] ?? '';
-            $timestamp = $item['timestamp'] ?? null;
-            $createdAt = $timestamp ? date('Y-m-d H:i:s', intval($timestamp / 1000)) : '';
-            $postId = (string)($item['postId'] ?? $item['id'] ?? md5($text));
-            $url = $item['url'] ?? $item['postUrl'] ?? "https://www.facebook.com/{$postId}";
-
-            $results[] = [
-                "post_id" => $postId,
-                "external_id" => "fb_{$postId}",
-                "author" => $author,
-                "text" => $text,
-                "url" => $url,
-                "created_at" => $createdAt,
-                "platform" => "facebook",
-                "country" => $country ?? "SA"
+        foreach ($cleanKeywords as $kw) {
+            $input = [
+                "query" => $kw,
+                "resultsCount" => max(10, $perKwLimit * 2),
+                "searchType" => "latest",
             ];
+
+            if ($country) {
+                $input["location"] = $country;
+            }
+
+            $items = $this->runActorAndFetchItems("TMBawM4LZpKN15DZX", $input);
+            $kwCount = 0;
+
+            foreach ($items as $item) {
+                $authorData = $item['author'] ?? [];
+                $author = $authorData['name'] ?? 'Unknown';
+                $text = $item['postText'] ?? $item['text'] ?? '';
+                $postId = (string)($item['postId'] ?? $item['id'] ?? md5($text));
+                $url = $item['url'] ?? $item['postUrl'] ?? "https://www.facebook.com/{$postId}";
+                $rawTs = $item['timestamp'] ?? $item['time'] ?? $item['date'] ?? null;
+
+                $tsVal = $this->parseSocialTimestamp($rawTs);
+                if ($tsVal && $tsVal < $cutoffTime) {
+                    continue;
+                }
+
+                $createdAt = $tsVal ? date('Y-m-d H:i:s', $tsVal) : date('Y-m-d H:i:s');
+
+                $allResults[] = [
+                    "keyword" => $kw,
+                    "post_id" => $postId,
+                    "external_id" => "fb_{$postId}",
+                    "author" => $author,
+                    "text" => $text,
+                    "url" => $url,
+                    "created_at" => $createdAt,
+                    "platform" => "facebook",
+                    "country" => $country ?? "SA"
+                ];
+
+                $kwCount++;
+                if ($kwCount >= $perKwLimit || count($allResults) >= $maxItems) {
+                    break;
+                }
+            }
+
+            if (count($allResults) >= $maxItems) {
+                break;
+            }
         }
 
-        return $results;
+        usort($allResults, function ($a, $b) {
+            return strtotime($b['created_at'] ?? 'now') <=> strtotime($a['created_at'] ?? 'now');
+        });
+
+        return $allResults;
     }
 
     // ==================== URL COMMENT SCRAPERS ====================
@@ -390,36 +467,56 @@ class ApifyScraperService
         }
 
         // Standard Facebook posts search actor (TMBawM4LZpKN15DZX)
-        $queryTerms = [];
-        $totalLen = 0;
-        foreach ($keywords as $kw) {
-            $kw = trim($kw);
-            if ($totalLen + mb_strlen($kw) + 1 <= 90) {
-                $queryTerms[] = $kw;
-                $totalLen += mb_strlen($kw) + 1;
-            } else {
-                break;
-            }
+        $primaryKeyword = trim($keywords[0] ?? 'trend');
+        if (str_contains($primaryKeyword, ' ') && !str_starts_with($primaryKeyword, '"') && !str_starts_with($primaryKeyword, '#')) {
+            $queryString = "\"{$primaryKeyword}\"";
+        } else {
+            $queryString = $primaryKeyword;
         }
-        $queryString = !empty($queryTerms) ? implode(" ", $queryTerms) : mb_substr($keywords[0] ?? 'trend', 0, 90);
 
         $input = [
             "query" => $queryString,
             "resultsCount" => max(1, $maxPosts),
-            "searchType" => "latest",
+            "searchType" => "top", // Prioritize top posts over raw latest
         ];
 
         $items = $this->runActorAndFetchItems("TMBawM4LZpKN15DZX", $input);
+        if (empty($items)) {
+            // Fallback to latest search if popular returns empty
+            $input["searchType"] = "latest";
+            $items = $this->runActorAndFetchItems("TMBawM4LZpKN15DZX", $input);
+        }
+
         $results = [];
+        $cutoffTime = time() - (3 * 86400); // Strict 3-day cutoff for trends ("بتاعت النهاردة")
 
         foreach ($items as $item) {
             $authorData = $item['author'] ?? [];
             $author = $authorData['name'] ?? $item['pageName'] ?? 'Facebook User';
             $text = $item['postText'] ?? $item['text'] ?? '';
-            $timestamp = $item['timestamp'] ?? null;
-            $createdAt = $timestamp ? date('Y-m-d H:i:s', intval($timestamp / 1000)) : null;
-            $postId = (string)($item['postId'] ?? $item['id'] ?? md5($text));
             $url = $item['url'] ?? $item['postUrl'] ?? null;
+            $rawTs = $item['timestamp'] ?? $item['time'] ?? $item['date'] ?? null;
+
+            // Extract engagement metrics
+            $likes = intval($item['likesCount'] ?? $item['likes'] ?? $item['reactionCount'] ?? 0);
+            $comments = intval($item['commentsCount'] ?? $item['comments'] ?? 0);
+            $shares = intval($item['sharesCount'] ?? $item['shares'] ?? 0);
+            $engagement = $likes + $comments + $shares;
+
+            // Reject if text, url, or raw date clearly contains old years (e.g. 2025, 2024, 2023)
+            $combined = $text . ' ' . ($url ?? '') . ' ' . (is_string($rawTs) ? $rawTs : '');
+            if (preg_match('/\b(201\d|202[0-5])\b/', $combined)) {
+                continue; // Strictly reject stale posts from previous years!
+            }
+
+            // Extract and parse real post timestamp
+            $tsVal = $this->parseSocialTimestamp($rawTs);
+
+            if ($tsVal && $tsVal < $cutoffTime) {
+                continue;
+            }
+
+            $createdAt = $tsVal ? date('Y-m-d H:i:s', $tsVal) : date('Y-m-d H:i:s');
 
             if (!empty($text)) {
                 $results[] = [
@@ -428,9 +525,21 @@ class ApifyScraperService
                     "text" => $text,
                     "time" => $createdAt,
                     "url" => $url,
+                    "engagement" => $engagement,
+                    "likes" => $likes,
+                    "comments" => $comments,
+                    "shares" => $shares,
                 ];
             }
         }
+
+        usort($results, function ($a, $b) {
+            // Sort primary by engagement then by timestamp
+            if (($b['engagement'] ?? 0) !== ($a['engagement'] ?? 0)) {
+                return ($b['engagement'] ?? 0) <=> ($a['engagement'] ?? 0);
+            }
+            return strtotime($b['time'] ?? 'now') <=> strtotime($a['time'] ?? 'now');
+        });
 
         return $results;
     }
@@ -448,15 +557,24 @@ class ApifyScraperService
         $input = [
             "hashtags" => array_values($cleanHashtags),
             "keywordSearch" => true,
-            "resultsType" => "posts",
+            "resultsType" => "top_posts", // Target top/viral posts instead of standard feed
             "resultsLimit" => max(1, $resultsLimit),
         ];
 
         $items = $this->runActorAndFetchItems("reGe1ST3OBgYZSsZJ", $input);
+        if (empty($items)) {
+            $input["resultsType"] = "posts";
+            $items = $this->runActorAndFetchItems("reGe1ST3OBgYZSsZJ", $input);
+        }
+
         $results = [];
 
         foreach ($items as $item) {
             $caption = $item['caption'] ?? '';
+            $likes = intval($item['likesCount'] ?? $item['likes'] ?? 0);
+            $comments = intval($item['commentsCount'] ?? $item['comments'] ?? 0);
+            $engagement = $likes + $comments;
+
             if (!empty($caption)) {
                 $results[] = [
                     "platform" => "instagram",
@@ -464,9 +582,16 @@ class ApifyScraperService
                     "text" => $caption,
                     "time" => $item['timestamp'] ?? null,
                     "url" => $item['url'] ?? null,
+                    "engagement" => $engagement,
+                    "likes" => $likes,
+                    "comments" => $comments,
                 ];
             }
         }
+
+        usort($results, function ($a, $b) {
+            return ($b['engagement'] ?? 0) <=> ($a['engagement'] ?? 0);
+        });
 
         return $results;
     }
@@ -482,19 +607,30 @@ class ApifyScraperService
             "keywords" => array_values($keywords),
             "searchType" => "video",
             "maxItemsPerKeyword" => max(1, $maxItems),
-            "sort" => "relevance",
+            "sort" => "popular", // Sort by popularity / engagement
             "region" => "",
-            "datePosted" => "any",
-            "deduplicateAcrossKeywords" => false,
+            "datePosted" => "this-month",
+            "deduplicateAcrossKeywords" => true,
             "includeKeywordInsights" => false,
             "includeDownloadUrl" => false,
         ];
 
         $items = $this->runActorAndFetchItems("APtXyRPRKLLe8yrXg", $input);
+        if (empty($items)) {
+            $input["sort"] = "date";
+            $items = $this->runActorAndFetchItems("APtXyRPRKLLe8yrXg", $input);
+        }
+
         $results = [];
 
         foreach ($items as $item) {
             $text = $item['caption'] ?? $item['text'] ?? '';
+            $likes = intval($item['diggCount'] ?? $item['likes'] ?? 0);
+            $views = intval($item['playCount'] ?? $item['views'] ?? 0);
+            $shares = intval($item['shareCount'] ?? 0);
+            $comments = intval($item['commentCount'] ?? 0);
+            $engagement = $likes + $shares + $comments;
+
             if (!empty($text)) {
                 $results[] = [
                     "platform" => "tiktok",
@@ -502,9 +638,17 @@ class ApifyScraperService
                     "text" => $text,
                     "time" => $item['createTimeISO'] ?? null,
                     "url" => $item['videoUrl'] ?? ($item['Url'] ?? null),
+                    "engagement" => $engagement,
+                    "likes" => $likes,
+                    "views" => $views,
+                    "shares" => $shares,
                 ];
             }
         }
+
+        usort($results, function ($a, $b) {
+            return ($b['engagement'] ?? 0) <=> ($a['engagement'] ?? 0);
+        });
 
         return $results;
     }
@@ -525,16 +669,76 @@ class ApifyScraperService
 
         foreach ($items as $item) {
             $trendName = $item['name'] ?? '';
+            $volume = intval($item['tweetVolume'] ?? $item['volume'] ?? 10000);
             if (!empty($trendName)) {
                 $results[] = [
                     "platform" => "twitter",
                     "trend_name" => $trendName,
                     "time" => $item['asOf'] ?? null,
                     "trendUrl" => $item['twitterSearchUrl'] ?? null,
+                    "engagement" => $volume,
+                    "volume" => $volume,
                 ];
             }
         }
 
         return $results;
     }
+
+    /**
+     * Parse any social media timestamp or localized date string (including Arabic and relative times).
+     */
+    public function parseSocialTimestamp(mixed $raw): ?int
+    {
+        if (empty($raw)) return null;
+        if (is_numeric($raw)) {
+            $val = intval($raw);
+            return $val > 9999999999 ? intval($val / 1000) : $val;
+        }
+
+        $str = trim((string)$raw);
+
+        // Normalize Arabic-Indic digits
+        $arabicNums = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+        $asciiNums = ['0','1','2','3','4','5','6','7','8','9'];
+        $str = str_replace($arabicNums, $asciiNums, $str);
+
+        // Explicit detection of past years (e.g. 2024, 2025 in year 2026)
+        if (preg_match('/\b(201\d|202[0-5])\b/', $str, $matches)) {
+            $oldYear = $matches[1];
+            return strtotime($oldYear . '-06-01');
+        }
+
+        // Replace Arabic months with English equivalents
+        $months = [
+            'يناير' => 'January', 'فبراير' => 'February', 'مارس' => 'March',
+            'أبريل' => 'April', 'ابريل' => 'April', 'مايو' => 'May',
+            'يونيو' => 'June', 'يوليو' => 'July', 'أغسطس' => 'August',
+            'اغسطس' => 'August', 'سبتمبر' => 'September', 'أكتوبر' => 'October',
+            'اكتوبر' => 'October', 'نوفمبر' => 'November', 'ديسمبر' => 'December',
+        ];
+        $strEng = str_replace(array_keys($months), array_values($months), $str);
+
+        // Relative Arabic phrases
+        if (preg_match('/منذ\s+(\d+)\s*(ساعة|ساعات|س)/u', $str, $m)) {
+            return strtotime('-' . $m[1] . ' hours');
+        }
+        if (preg_match('/منذ\s+(\d+)\s*(دقيقة|دقائق|د)/u', $str, $m)) {
+            return strtotime('-' . $m[1] . ' minutes');
+        }
+        if (preg_match('/منذ\s+(\d+)\s*(يوم|أيام|ايام)/u', $str, $m)) {
+            return strtotime('-' . $m[1] . ' days');
+        }
+        if (str_contains($str, 'ساعتين')) return strtotime('-2 hours');
+        if (str_contains($str, 'يومين')) return strtotime('-2 days');
+        if (str_contains($str, 'أمس') || str_contains($str, 'امس')) return strtotime('-1 day');
+        if (str_contains($str, 'الآن') || str_contains($str, 'الان')) return time();
+
+        $cleanStr = preg_replace('/[^\w\s:,\-\/]/u', ' ', $strEng);
+        $cleanStr = trim(preg_replace('/\s+/', ' ', $cleanStr));
+        $parsed = strtotime($cleanStr);
+
+        return $parsed ?: (strtotime($str) ?: null);
+    }
 }
+

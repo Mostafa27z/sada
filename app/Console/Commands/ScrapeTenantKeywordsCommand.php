@@ -15,7 +15,7 @@ class ScrapeTenantKeywordsCommand extends Command
 
     public function handle(): int
     {
-        $tenants = Tenant::where('is_active', true)->get();
+        $tenants = Tenant::whereIn('status', [Tenant::STATUS_ACTIVE, Tenant::STATUS_TRIAL])->get();
 
         if ($tenants->isEmpty()) {
             $this->info('No active tenants found.');
@@ -27,10 +27,23 @@ class ScrapeTenantKeywordsCommand extends Command
         foreach ($tenants as $tenant) {
             TenantContext::setTenant($tenant);
 
-            $keywords = Keyword::where('status', Keyword::STATUS_ACTIVE)->pluck('name')->toArray();
+            $keywordRecords = Keyword::where('status', Keyword::STATUS_ACTIVE)->get();
+            $keywords = [];
+
+            foreach ($keywordRecords as $kw) {
+                $keywords[] = $kw->name;
+                $config = $kw->configuration;
+                if (!empty($config['keywords']) && is_array($config['keywords'])) {
+                    foreach ($config['keywords'] as $subKw) {
+                        if (!empty($subKw) && !in_array($subKw, $keywords)) {
+                            $keywords[] = $subKw;
+                        }
+                    }
+                }
+            }
 
             if (!empty($keywords)) {
-                ScrapeKeywordsJob::dispatch($tenant->id, $keywords);
+                ScrapeKeywordsJob::dispatch($tenant->id, array_values(array_unique($keywords)));
                 $dispatchedCount++;
                 $this->info("Dispatched keyword scraper job for tenant #{$tenant->id} with " . count($keywords) . " keywords.");
             }

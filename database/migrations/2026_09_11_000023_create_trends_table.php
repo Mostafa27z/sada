@@ -16,6 +16,7 @@ return new class extends Migration
             $table->enum('status', ['pending', 'processing', 'completed', 'failed'])->default('pending')->index();
             $table->integer('limit')->default(50);
             $table->json('platforms')->nullable();
+            $table->string('country', 10)->default('SA')->nullable();
             $table->json('keywords')->nullable();
             $table->json('hashtags')->nullable();
             $table->integer('raw_data_count')->default(0);

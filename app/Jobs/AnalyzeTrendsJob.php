@@ -25,7 +25,8 @@ class AnalyzeTrendsJob implements ShouldQueue
         public int $tenantId,
         public string $topic,
         public int $limit = 50,
-        public array $platforms = ['facebook', 'instagram', 'tiktok', 'twitter']
+        public array $platforms = ['facebook', 'instagram', 'tiktok', 'twitter'],
+        public ?string $country = 'SA'
     ) {}
 
     public function handle(TrendService $trendService): void
@@ -53,7 +54,8 @@ class AnalyzeTrendsJob implements ShouldQueue
             $result = $trendService->runPipeline(
                 topic: $this->topic,
                 limit: $this->limit,
-                platforms: $this->platforms
+                platforms: $this->platforms,
+                country: $this->country ?? 'SA'
             );
 
             $trend->update([

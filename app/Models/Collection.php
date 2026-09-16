@@ -12,11 +12,23 @@ class Collection extends Model
 {
     use HasFactory, BelongsToTenant;
 
+    const STATUS_PENDING = 'pending';
+    const STATUS_COMPLETED = 'completed';
+    const STATUS_ACTIVE = 'active';
+    const STATUS_FAILED = 'failed';
+
     protected $fillable = [
         'tenant_id',
         'name',
         'description',
+        'link',
+        'platform',
+        'country',
+        'keywords',
+        'comments_limit',
         'color',
+        'status',
+        'error_message',
         'created_by',
     ];
 

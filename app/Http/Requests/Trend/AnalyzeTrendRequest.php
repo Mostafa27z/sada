@@ -19,6 +19,7 @@ class AnalyzeTrendRequest extends FormRequest
             'limit' => ['sometimes', 'integer', 'min:5', 'max:500'],
             'platforms' => ['sometimes', 'array'],
             'platforms.*' => ['string', Rule::in(['facebook', 'instagram', 'tiktok', 'twitter', 'x'])],
+            'country' => ['sometimes', 'nullable', 'string', 'max:10'],
             'sync' => ['sometimes', 'boolean'],
         ];
     }

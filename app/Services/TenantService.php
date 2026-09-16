@@ -43,18 +43,27 @@ class TenantService
     /**
      * Invite / attach a user to a tenant.
      */
-    public function inviteUser(Tenant $tenant, string $email, ?string $name = null): User
+    public function inviteUser(Tenant $tenant, string $email, ?string $name = null, ?string $phone = null, ?string $status = null): User
     {
-        return DB::transaction(function () use ($tenant, $email, $name) {
+        return DB::transaction(function () use ($tenant, $email, $name, $phone, $status) {
             $user = User::where('email', $email)->first();
 
             if (!$user) {
                 $user = User::create([
                     'name' => $name ?? explode('@', $email)[0],
                     'email' => $email,
+                    'phone' => $phone,
                     'password' => bcrypt(Str::random(16)),
-                    'status' => User::STATUS_INVITED,
+                    'status' => $status ?? User::STATUS_ACTIVE,
                 ]);
+            } else {
+                $updateData = [];
+                if ($phone !== null) $updateData['phone'] = $phone;
+                if ($name !== null) $updateData['name'] = $name;
+                if ($status !== null) $updateData['status'] = $status;
+                if (!empty($updateData)) {
+                    $user->update($updateData);
+                }
             }
 
             if (!$user->belongsToTenant($tenant->id)) {
@@ -68,6 +77,20 @@ class TenantService
             }
 
             return $user;
+        });
+    }
+
+    /**
+     * Update user information in tenant context.
+     */
+    public function updateUser(Tenant $tenant, User $user, array $data): User
+    {
+        return DB::transaction(function () use ($user, $data) {
+            $fillable = array_intersect_key($data, array_flip(['name', 'email', 'phone', 'status']));
+            if (!empty($fillable)) {
+                $user->update($fillable);
+            }
+            return $user->refresh();
         });
     }
 

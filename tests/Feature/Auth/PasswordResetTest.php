@@ -32,8 +32,8 @@ class PasswordResetTest extends TestCase
         $response = $this->postJson('/api/v1/auth/reset-password', [
             'token' => $token,
             'email' => 'ahmed@example.com',
-            'password' => 'newpassword123',
-            'password_confirmation' => 'newpassword123',
+            'password' => 'NewPassword123!@#',
+            'password_confirmation' => 'NewPassword123!@#',
         ]);
 
         $response->assertOk()
@@ -42,7 +42,7 @@ class PasswordResetTest extends TestCase
         // Verify new password works
         $this->postJson('/api/v1/auth/login', [
             'email' => 'ahmed@example.com',
-            'password' => 'newpassword123',
+            'password' => 'NewPassword123!@#',
         ])->assertOk();
     }
 
@@ -53,8 +53,8 @@ class PasswordResetTest extends TestCase
         $response = $this->postJson('/api/v1/auth/reset-password', [
             'token' => 'invalid-token',
             'email' => 'ahmed@example.com',
-            'password' => 'newpassword123',
-            'password_confirmation' => 'newpassword123',
+            'password' => 'NewPassword123!@#',
+            'password_confirmation' => 'NewPassword123!@#',
         ]);
 
         $response->assertStatus(400)
@@ -78,8 +78,8 @@ class PasswordResetTest extends TestCase
         $this->postJson('/api/v1/auth/reset-password', [
             'token' => $token,
             'email' => 'ahmed@example.com',
-            'password' => 'newpassword123',
-            'password_confirmation' => 'newpassword123',
+            'password' => 'NewPassword123!@#',
+            'password_confirmation' => 'NewPassword123!@#',
         ])->assertOk();
 
         $this->assertEquals(0, $user->tokens()->count());

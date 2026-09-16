@@ -38,6 +38,15 @@ class ArticleController extends Controller
             $query->where('language', $request->language);
         }
 
+        // Filter by platform
+        if ($request->has('platform') && !empty($request->platform) && $request->platform !== 'all') {
+            $plat = strtolower(trim((string) $request->platform));
+            $query->where(function ($q) use ($plat) {
+                $q->where('raw_data->platform', $plat)
+                  ->orWhereHas('source', fn($sq) => $sq->where('platform', $plat)->orWhere('type', $plat));
+            });
+        }
+
         // Filter by country
         if ($request->has('country')) {
             $query->where('country', $request->country);
@@ -57,11 +66,13 @@ class ArticleController extends Controller
 
         // Date range filters
         if ($request->has('date_from')) {
-            $query->where('published_at', '>=', $request->date_from);
+            $dateFrom = strlen($request->date_from) === 10 ? $request->date_from . ' 00:00:00' : $request->date_from;
+            $query->where('published_at', '>=', $dateFrom);
         }
 
         if ($request->has('date_to')) {
-            $query->where('published_at', '<=', $request->date_to);
+            $dateTo = strlen($request->date_to) === 10 ? $request->date_to . ' 23:59:59' : $request->date_to;
+            $query->where('published_at', '<=', $dateTo);
         }
 
         // Sorting

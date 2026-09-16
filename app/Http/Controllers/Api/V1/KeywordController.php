@@ -152,7 +152,19 @@ class KeywordController extends Controller
 
         $keywords = $request->input('keywords', []);
         if (empty($keywords)) {
-            $keywords = Keyword::where('status', Keyword::STATUS_ACTIVE)->pluck('name')->toArray();
+            $keywordRecords = Keyword::where('status', Keyword::STATUS_ACTIVE)->get();
+            foreach ($keywordRecords as $kw) {
+                $keywords[] = $kw->name;
+                $config = $kw->configuration;
+                if (!empty($config['keywords']) && is_array($config['keywords'])) {
+                    foreach ($config['keywords'] as $subKw) {
+                        if (!empty($subKw) && !in_array($subKw, $keywords)) {
+                            $keywords[] = $subKw;
+                        }
+                    }
+                }
+            }
+            $keywords = array_values(array_unique($keywords));
         }
 
         if (empty($keywords)) {

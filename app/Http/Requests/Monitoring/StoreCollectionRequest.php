@@ -16,7 +16,14 @@ class StoreCollectionRequest extends FormRequest
         return [
             'name' => ['required', 'string', 'max:255'],
             'description' => ['sometimes', 'nullable', 'string'],
+            'link' => ['sometimes', 'nullable', 'string', 'max:500'],
+            'platform' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'platforms' => ['sometimes', 'nullable', 'array'],
+            'country' => ['sometimes', 'nullable', 'string', 'max:10'],
             'color' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'comments_limit' => ['sometimes', 'nullable'],
+            'keyword' => ['sometimes', 'nullable', 'string'],
+            'keywords' => ['sometimes', 'nullable', 'array'],
         ];
     }
 }

@@ -65,7 +65,6 @@ class Keyword extends Model
     public function articles(): BelongsToMany
     {
         return $this->belongsToMany(Article::class, 'article_keyword')
-            ->withPivot(['matched_terms', 'relevance_score'])
-            ->withTimestamps();
+            ->withPivot(['matched_terms', 'relevance_score']);
     }
 }

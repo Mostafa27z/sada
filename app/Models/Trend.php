@@ -24,6 +24,7 @@ class Trend extends Model
         'status',
         'limit',
         'platforms',
+        'country',
         'keywords',
         'hashtags',
         'raw_data_count',

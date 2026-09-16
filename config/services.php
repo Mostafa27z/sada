@@ -35,4 +35,12 @@ return [
         ],
     ],
 
+    'apify' => [
+        'token' => env('APIFY_API_TOKEN'),
+    ],
+
+    'gemini' => [
+        'api_key' => env('GEMINI_API_KEY'),
+    ],
+
 ];

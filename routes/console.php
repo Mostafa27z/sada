@@ -10,3 +10,4 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('sada:scrape-keywords')->dailyAt('00:00');
+Schedule::command('sada:sync-all')->everyFourHours();

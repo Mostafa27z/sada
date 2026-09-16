@@ -49,18 +49,24 @@ trait ApiResponse
     /**
      * Return a paginated response.
      */
-    protected function paginated(LengthAwarePaginator $paginator, string $resourceClass): JsonResponse
+    protected function paginated(LengthAwarePaginator $paginator, string $resourceClass, array $extraMeta = []): JsonResponse
     {
+        $meta = [
+            'current_page' => $paginator->currentPage(),
+            'last_page' => $paginator->lastPage(),
+            'per_page' => $paginator->perPage(),
+            'total' => $paginator->total(),
+        ];
+
+        if (!empty($extraMeta)) {
+            $meta = array_merge($meta, $extraMeta);
+        }
+
         return response()->json([
             'success' => true,
             'message' => null,
             'data' => $resourceClass::collection($paginator->items()),
-            'meta' => [
-                'current_page' => $paginator->currentPage(),
-                'last_page' => $paginator->lastPage(),
-                'per_page' => $paginator->perPage(),
-                'total' => $paginator->total(),
-            ],
+            'meta' => $meta,
         ]);
     }
 

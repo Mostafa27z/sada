@@ -24,6 +24,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             PlanSeeder::class,
             RoleAndPermissionSeeder::class,
+            SuperAdminSeeder::class,
         ]);
 
         // 2. Fetch Pro Plan

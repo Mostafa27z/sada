@@ -9,11 +9,54 @@ class GeminiAnalyticsService
 {
     protected string $apiKey;
     protected string $apiUrl = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-    protected string $model = 'gemini-2.5-flash';
+    protected string $model = 'gemini-flash-latest';
+    protected array $fallbackModels = ['gemini-flash-latest', 'gemini-3.6-flash'];
 
     public function __construct()
     {
-        $this->apiKey = env('GOOGLE_API_KEY', '');
+        $this->apiKey = config('services.gemini.api_key') ?: env('GEMINI_API_KEY') ?: env('GOOGLE_API_KEY', '');
+    }
+
+    /**
+     * Call Gemini with multi-model fallback in case of 503 capacity or 429 rate limit errors.
+     */
+    protected function callGemini(array $messages, int $timeout = 120, array $responseFormat = ['type' => 'json_object']): ?string
+    {
+        $modelsToTry = array_unique(array_merge([$this->model], $this->fallbackModels));
+
+        foreach ($modelsToTry as $candidateModel) {
+            $payload = [
+                'model' => $candidateModel,
+                'messages' => $messages,
+                'response_format' => $responseFormat,
+            ];
+
+            try {
+                $response = $this->getHttpClient()
+                    ->retry(2, 1000, throw: false)
+                    ->withHeaders([
+                        'Authorization' => "Bearer {$this->apiKey}",
+                        'Content-Type' => 'application/json',
+                    ])->timeout($timeout)->post($this->apiUrl, $payload);
+
+                if ($response->successful()) {
+                    return $response->json('choices.0.message.content', '{}');
+                }
+
+                $status = $response->status();
+                Log::warning("Gemini model {$candidateModel} returned status {$status}", [
+                    'body' => $response->body(),
+                ]);
+
+                if (in_array($status, [503, 429, 404])) {
+                    continue;
+                }
+            } catch (\Exception $e) {
+                Log::warning("Gemini model {$candidateModel} failed with exception: " . $e->getMessage());
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -148,37 +191,19 @@ PROMPT;
         $formattedComments = $this->formatCommentsForPrompt($insta, $fb, $x, $tiktok);
         $userMessage = "إليك قائمة التعليقات الكلية مقسمة حسب المنصات:\n" . $formattedComments;
 
-        $payload = [
-            'model' => $this->model,
-            'messages' => [
-                ['role' => 'system', 'content' => $this->getSystemPrompt()],
-                ['role' => 'user', 'content' => $userMessage],
-            ],
-            'response_format' => ['type' => 'json_object'],
+        $messages = [
+            ['role' => 'system', 'content' => $this->getSystemPrompt()],
+            ['role' => 'user', 'content' => $userMessage],
         ];
 
-        try {
-            $response = $this->getHttpClient()->withHeaders([
-                'Authorization' => "Bearer {$this->apiKey}",
-                'Content-Type' => 'application/json',
-            ])->timeout(120)->post($this->apiUrl, $payload);
-
-            if (!$response->successful()) {
-                Log::error("Gemini API call failed", [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-                return [];
-            }
-
-            $content = $response->json('choices.0.message.content', '{}');
-            $json = json_decode($content, true);
-
+        $content = $this->callGemini($messages, 120);
+        if ($content) {
+            $cleaned = preg_replace('/```json|```/', '', $content);
+            $json = json_decode(trim($cleaned), true);
             return is_array($json) ? $json : [];
-        } catch (\Exception $e) {
-            Log::error("Gemini Analytics Exception: " . $e->getMessage());
-            return [];
         }
+
+        return [];
     }
 
     // ==================== TOPIC TREND DISCOVERY & ANALYSIS ====================
@@ -198,59 +223,43 @@ PROMPT;
         }
 
         $prompt = <<<PROMPT
-أنت خبير تسويق إلكتروني وتحليل شبكات اجتماعية.
-المجال المستهدف: ({$industry}).
+أنت خبير متقدم في الرصد الرقمي واكتشاف التريندات على شبكات التواصل (Social Listening & Trend Hunter).
+الموضوع أو الكيان المستهدف بدقة متناهية: ("{$industry}").
 
 المطلوب:
-قم بتوليد قائمة مخصصة لأهم مصطلحات البحث والهاشتاجات الأكثر تداولاً وانتشاراً حالياً والمتعلقة بمجال ({$industry}).
+توليد أهم عبارات البحث والهاشتاجات الأكثر دقة وحداثة لرصد هذا الموضوع تحديداً على فيسبوك، تيك توك، وإكس:
+التعليمات الصارمة:
+1. حافظ دوماً على العبارة أو الجملة المستهدفة كاملة ("{$industry}") ولا تقم بتفكيكها إلى كلمات منفصلة أو مجردة.
+2. الكلمات المفتاحية الناتجة يجب أن تتضمن الجملة كاملة أو عبارات مركبة مرتبطة بها مباشرة، بدون تجزئتها لكلمات فردية عشوائية.
+3. ركز على زوايا التفاعل الحي للجمهور (مثال: أخبار، ملخص، ملخص مباراة، عروض، رأي الناس، تفاصيل).
+4. قم بتوليد 6 عبارات مفتاحية (keywords) مركبة ودقيقة تتناول الجملة كاملة.
+5. قم بتوليد 6 هاشتاجات (hashtags) نشطة ومباشرة متضمنة رمز # في البداية.
+6. أرجع الناتج بتنسيق JSON حصراً بنفس الهيكل التالي وبدون أي مقدمات أو شروحات:
 
-التعليمات والشروط:
-1. قم بتوليد 8 كلمات مفتاحية (keywords) رئيسية وشائعة باللغتين العربية والإنجليزية.
-2. قم بتوليد 8 هاشتاجات (hashtags) نشطة ومستهدفة متضمنة رمز الـ # في البداية (مثال: #ذكاء_اصطناعي).
-3. أرجع النتيجة بتنسيق JSON حصراً بنفس الهيكل المحدد أدناه وبدون إضافة أي شرح أو نص خارجي.
-
-هيكل الـ JSON المطلوب:
 {
-    "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4", "كلمة5", "كلمة6", "كلمة7", "كلمة8"],
-    "hashtags": ["#هاشتاج1", "#هاشتاج2", "#هاشتاج3", "#هاشتاج4", "#هاشتاج5", "#هاشتاج6", "#هاشتاج7", "#هاشتاج8"]
+    "keywords": ["عبارة مركبة 1", "عبارة مركبة 2", "عبارة مركبة 3", "عبارة مركبة 4", "عبارة مركبة 5", "عبارة مركبة 6"],
+    "hashtags": ["#هاشتاج1", "#هاشتاج2", "#هاشتاج3", "#هاشتاج4", "#هاشتاج5", "#هاشتاج6"]
 }
 PROMPT;
 
-        $payload = [
-            'model' => $this->model,
-            'messages' => [
-                ['role' => 'user', 'content' => $prompt],
-            ],
-            'response_format' => ['type' => 'json_object'],
+        $messages = [
+            ['role' => 'user', 'content' => $prompt],
         ];
 
-        try {
-            $response = $this->getHttpClient()
-                ->retry(3, 2000, throw: false)
-                ->withHeaders([
-                    'Authorization' => "Bearer {$this->apiKey}",
-                    'Content-Type' => 'application/json',
-                ])->timeout(60)->post($this->apiUrl, $payload);
+        $content = $this->callGemini($messages, 60);
+        if ($content) {
+            $cleaned = preg_replace('/```json|```/', '', $content);
+            $data = json_decode(trim($cleaned), true);
 
-            if ($response->successful()) {
-                $content = $response->json('choices.0.message.content', '{}');
-                $cleaned = preg_replace('/```json|```/', '', $content);
-                $data = json_decode(trim($cleaned), true);
+            $keywords = array_slice($data['keywords'] ?? [$industry], 0, 6);
+            $hashtags = array_slice($data['hashtags'] ?? ["#" . str_replace(' ', '_', $industry)], 0, 6);
+            $allQueries = array_values(array_unique(array_merge([$industry], $keywords, $hashtags)));
 
-                $keywords = array_slice($data['keywords'] ?? [$industry], 0, 8);
-                $hashtags = array_slice($data['hashtags'] ?? ["#" . str_replace(' ', '_', $industry)], 0, 8);
-                $allQueries = array_values(array_unique(array_merge($keywords, $hashtags)));
-
-                return [
-                    "keywords" => $keywords,
-                    "hashtags" => $hashtags,
-                    "all_queries" => $allQueries,
-                ];
-            }
-
-            Log::error("Gemini query generation failed", ['body' => $response->body()]);
-        } catch (\Exception $e) {
-            Log::error("Gemini query generation exception: " . $e->getMessage());
+            return [
+                "keywords" => $keywords,
+                "hashtags" => $hashtags,
+                "all_queries" => $allQueries,
+            ];
         }
 
         return [
@@ -273,7 +282,7 @@ PROMPT;
             ];
         }
 
-        // Condense raw data to prevent token explosion while preserving context
+        // Condense raw data to prevent token explosion while preserving context & engagement metrics
         $condensedData = array_map(function ($item) {
             return [
                 "platform" => $item['platform'] ?? 'unknown',
@@ -281,6 +290,7 @@ PROMPT;
                 "content" => $item['text'] ?? $item['caption'] ?? $item['trend_name'] ?? '',
                 "time" => $item['time'] ?? $item['created_at'] ?? null,
                 "url" => $item['url'] ?? $item['trendUrl'] ?? null,
+                "engagement" => $item['engagement'] ?? 0,
             ];
         }, $rawData);
 
@@ -289,26 +299,29 @@ PROMPT;
         $encodedData = json_encode($sampleData, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
         $prompt = <<<PROMPT
-أنت خبير تحليل بيانات الشبكات الاجتماعية (Social Listening & Trend Analyst).
-المجال المستهدف: ({$industry}).
+أنت خبير استراتيجي متقدم في تحليل بيانات شبكات التواصل والإنصات الرقمي (Social Listening & Trend Intelligence Specialist).
+مجال/نشاط الشركة المستهدفة: ({$industry}).
 
-إليك البيانات المجمعة من منصات التواصل الاجتماعي (Facebook, Instagram, TikTok, Twitter/X):
+إليك البيانات المجمعة من منصات التواصل الاجتماعي (Facebook, Instagram, TikTok, Twitter/X) مع التفاعلات:
 {$encodedData}
 
 ملاحظات هامة حول البيانات:
-- منصات (Facebook, Instagram, TikTok) تحتوي على نصوص ومحتوى منشورات حقيقي (content).
+- منصات (Facebook, Instagram, TikTok) تحتوي على نصوص ومحتوى منشورات حقيقي (content) وعدد تفاعلات.
 - منصة (Twitter/X) تحتوي على قائمة بأسماء وعناوين الترندات الأكثر تداولاً حالياً (content/trend_name).
 
-المهام المطلوب منك تنفيذها بدقة:
-1. اقرأ جميع النصوص وعناوين الترندات وقم بتجميع المواضيع المتشابهة أو المرتبطة معاً تحت عنوان "ترند رئيسي" (Trend Cluster).
+المهام المطلوب منك تنفيذها بدقة واحترافية عالية:
+1. اقرأ جميع النصوص وعناوين الترندات وقم بتجميع المواضيع المتشابهة تحت عنوان "ترند رئيسي" (Trend Cluster).
 2. استبعد تماماً أي منشورات أو ترندات عامة لا تمت بصلة لمجال ({$industry}).
-3. لكل ترند رئيسي نجحت في اكتشافه واستخراجه:
-   - trend_title: اسم أو عنوان واضح للترند.
-   - platforms: قائمة بالمنصات التي ظهر فيها هذا الترند (مثال: ["facebook", "tiktok"]).
-   - sentiment: تحديد المشاعر أو الانطباع العام للجمهور تجاه الترند ("إيجابي" / "سلبي" / "محايد").
-   - trend_summary: ملخص موجز ودقيق للترند وما يتحدث عنه الناس.
-   - actionable_solutions: إذا كانت المشاعر "سلبي"، قدم مصفوفة بـ 3 حلول عملية ومباشرة للتعامل مع المشكلة وإدارة الأزمة. إذا لم تكن سلبية أرجع null.
-   - positive_strategy: إذا كانت المشاعر "إيجابي"، قدم تعليقاً تحليلياً واستراتيجية تسويقية وتوسعية لاستغلال هذا الترند. إذا لم تكن إيجابية أرجع null.
+3. لكل ترند رئيسي تم اكتشافه:
+   - trend_title: اسم أو عنوان واضح ومباشر للترند.
+   - virality_score: درجة مؤشر انتشار التريند وقوته من (1 إلى 100).
+   - virality_level: مستوى الانتشار ("مرتفع جداً" / "مرتفع" / "متوسط").
+   - platforms: قائمة المنصات المكتشف بها.
+   - sentiment: الانطباع العام للجمهور ("إيجابي" / "سلبي" / "محايد").
+   - trend_summary: ملخص موجز ودقيق لما يدور حوله الترند.
+   - actionable_recommendations: مصفوفة حتمية تضم من 2 إلى 3 مقترحات عمل وأفكار محتوى مخصصة ومبتكرة يناسب مجال الشركة ({$industry}) لركوب موجة الترند والاستفادة منه فوراً (مثال: إذا كان الترند مباراة كروية يُقترح إنشاء استوديو تحليلي أو مسابقة توقعات، إذا كان فوز شخصية يُقترح تقديم تهنئة رسمية، إذا كان عرض أو سعر يُقترح باقة ترويجية مناسبة).
+   - actionable_solutions: 3 حلول عملية لإدارة الأزمة إذا كان الانطباع "سلبي" (أو null إذا لم يكن سلبياً).
+   - positive_strategy: استراتيجية تسويقية وتوسعية إذا كان الانطباع "إيجابي" (أو null إذا لم يكن إيجابياً).
 
 أرجع الناتج بتنسيق JSON حصراً وبناءً على الهيكل التالي فقط:
 {
@@ -317,51 +330,36 @@ PROMPT;
     "trends_analysis": [
         {
             "trend_title": "عنوان الترند المكتشف",
-            "platforms": ["facebook", "tiktok"],
-            "sentiment": "سلبي",
+            "virality_score": 85,
+            "virality_level": "مرتفع جداً",
+            "platforms": ["facebook", "tiktok", "twitter"],
+            "sentiment": "إيجابي",
             "trend_summary": "ملخص لما يدور حوله الترند...",
-            "actionable_solutions": [
-                "حل عملي 1",
-                "حل عملي 2",
-                "حل عملي 3"
+            "actionable_recommendations": [
+                "فكرة محتوى/إجراء 1 (مثال: إنشاء استوديو تحليلي مباشر قبل المباراة)",
+                "فكرة محتوى/إجراء 2 (مثال: نشر مسابقة تفاعلية لتوقع النتيجة مع الجمهور)"
             ],
-            "positive_strategy": null
+            "actionable_solutions": null,
+            "positive_strategy": "استراتيجية استغلال الزخم..."
         }
     ]
 }
 PROMPT;
 
-        $payload = [
-            'model' => $this->model,
-            'messages' => [
-                ['role' => 'user', 'content' => $prompt],
-            ],
-            'response_format' => ['type' => 'json_object'],
+        $messages = [
+            ['role' => 'user', 'content' => $prompt],
         ];
 
-        try {
-            $response = $this->getHttpClient()
-                ->retry(3, 2000, throw: false)
-                ->withHeaders([
-                    'Authorization' => "Bearer {$this->apiKey}",
-                    'Content-Type' => 'application/json',
-                ])->timeout(180)->post($this->apiUrl, $payload);
+        $content = $this->callGemini($messages, 180);
+        if ($content) {
+            $cleaned = preg_replace('/```json|```/', '', $content);
+            $result = json_decode(trim($cleaned), true);
 
-            if ($response->successful()) {
-                $content = $response->json('choices.0.message.content', '{}');
-                $cleaned = preg_replace('/```json|```/', '', $content);
-                $result = json_decode(trim($cleaned), true);
-
-                if (is_array($result)) {
-                    $analysis = $result['trends_analysis'] ?? [];
-                    $result['trends_count'] = count($analysis);
-                    return $result;
-                }
+            if (is_array($result)) {
+                $analysis = $result['trends_analysis'] ?? [];
+                $result['trends_count'] = count($analysis);
+                return $result;
             }
-
-            Log::error("Gemini trend analysis failed", ['body' => $response->body()]);
-        } catch (\Exception $e) {
-            Log::error("Gemini trend analysis exception: " . $e->getMessage());
         }
 
         return [
@@ -370,4 +368,61 @@ PROMPT;
             "trends_analysis" => [],
         ];
     }
+
+    /**
+     * Generate tactical AI recommendations, actionable advice, and suggested draft post for an individual post/article.
+     */
+    public function generatePostRecommendation(string $text, ?string $author = null, ?string $platform = null, ?string $sentiment = null): array
+    {
+        $authorInfo = $author ? "الناشر/المصدر: {$author}" : "";
+        $platformInfo = $platform ? "المنصة: {$platform}" : "";
+        $sentimentInfo = $sentiment ? "الانطباع: {$sentiment}" : "";
+
+        $prompt = <<<PROMPT
+أنت مستشار استراتيجي أول في إدارة مواقع التواصل الاجتماعي والتفاعل الرقمي وصناعة المحتوى (Social Media Strategist & Content Lead).
+
+إليك تفاصيل منشور/خبر مرصود على شبكات التواصل الاجتماعي:
+{$authorInfo}
+{$platformInfo}
+{$sentimentInfo}
+
+نص المنشور/الخبر:
+"""
+{$text}
+"""
+
+المطلوب:
+تحليل هذا المنشور بدقة وتقديم خطة تفاعل وصناعة محتوى ذكية لصاحب الحساب/الشركة، للإجابة على: (كيف يجب أن أتفاعل مع هذا الحدث أو المنشور؟ وما المنشور الذي يمكنني نشره لمواكبة الزخم؟)
+
+قم بإرجاع كائن JSON بالهيكل التالي حصراً:
+{
+    "recommended_action": "توجيه وإجراء عملي وتكتيكي واضح ومباشر للتعامل مع هذا الحدث والاستفادة منه (مثال: نشر تعليق فوري، إعداد فيديو تحليلي، إطلاق مسابقة توقعات، استطلاع رأي)",
+    "engagement_angle": "الزاوية التكتيكية للتفاعل (مثال: محتوى تحليلي ونقاش جماهيري / ركوب موجة التريند / تفاعل رياضي وتوقعات)",
+    "suggested_post": "صيغة منشور احترافي وجذاب جاهز للنشر الفوري لمواكبة الحدث (متضمناً بداية مشوقة، تفاعل مع المتابعين، وهاشتاجات مناسبة)",
+    "hashtags": ["#هاشتاج1", "#هاشتاج2", "#هاشتاج3"]
 }
+PROMPT;
+
+        $messages = [
+            ['role' => 'user', 'content' => $prompt],
+        ];
+
+        $content = $this->callGemini($messages, 45);
+        if ($content) {
+            $cleaned = preg_replace('/```json|```/', '', $content);
+            $result = json_decode(trim($cleaned), true);
+            if (is_array($result) && !empty($result['recommended_action'])) {
+                return $result;
+            }
+        }
+
+        // Contextual smart fallback
+        return [
+            "recommended_action" => "نشر منشور تفاعلي سريع يواكب مجريات هذا الحدث، مع توجيه سؤال نقاشي للجمهور لزيادة التفاعل والمشاركات.",
+            "engagement_angle" => "مواكبة الحدث وتفعيل النقاش الجماهيري",
+            "suggested_post" => "ما رأيكم في مجريات هذه النتيجة؟ شاركونا توقعاتكم وآرائكم في التعليقات! 👇",
+            "hashtags" => ["#تريند", "#تفاعل_معنا"],
+        ];
+    }
+}
+

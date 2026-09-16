@@ -49,6 +49,7 @@ class CommentController extends Controller
     public function scrape(Request $request)
     {
         $request->validate([
+            'url' => ['sometimes', 'nullable', 'string'],
             'insta_urls' => ['sometimes', 'array'],
             'facebook_urls' => ['sometimes', 'array'],
             'tiktok_urls' => ['sometimes', 'array'],
@@ -68,6 +69,19 @@ class CommentController extends Controller
             'twitter_urls' => $request->get('twitter_urls', []),
         ];
 
+        if ($request->filled('url')) {
+            $singleUrl = trim((string) $request->input('url'));
+            if (str_contains($singleUrl, 'instagram')) {
+                $urlsByPlatform['insta_urls'][] = $singleUrl;
+            } elseif (str_contains($singleUrl, 'facebook') || str_contains($singleUrl, 'fb.com')) {
+                $urlsByPlatform['facebook_urls'][] = $singleUrl;
+            } elseif (str_contains($singleUrl, 'tiktok')) {
+                $urlsByPlatform['tiktok_urls'][] = $singleUrl;
+            } else {
+                $urlsByPlatform['twitter_urls'][] = $singleUrl;
+            }
+        }
+
         ScrapePostCommentsJob::dispatch(
             $tenantId,
             $urlsByPlatform,
@@ -75,5 +89,27 @@ class CommentController extends Controller
         );
 
         return $this->success(null, 'Scraping task queued successfully. Results will be processed asynchronously.', 202);
+    }
+
+    /**
+     * Generate tactical AI recommendations and post draft for a comment or monitored post.
+     */
+    public function generateAiRecommendation(Request $request, \App\Services\GeminiAnalyticsService $geminiService)
+    {
+        $request->validate([
+            'text' => ['required', 'string'],
+            'author' => ['sometimes', 'nullable', 'string'],
+            'platform' => ['sometimes', 'nullable', 'string'],
+            'sentiment' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        $result = $geminiService->generatePostRecommendation(
+            $request->input('text'),
+            $request->input('author'),
+            $request->input('platform'),
+            $request->input('sentiment')
+        );
+
+        return $this->success($result, 'AI recommendation generated successfully.');
     }
 }

@@ -21,6 +21,7 @@ class StoreKeywordRequest extends FormRequest
             'language' => ['sometimes', 'string', 'max:10'],
             'country' => ['sometimes', 'string', 'max:10'],
             'priority' => ['sometimes', Rule::in([Keyword::PRIORITY_LOW, Keyword::PRIORITY_MEDIUM, Keyword::PRIORITY_HIGH, Keyword::PRIORITY_CRITICAL])],
+            'status' => ['sometimes', Rule::in([Keyword::STATUS_ACTIVE, Keyword::STATUS_PAUSED, Keyword::STATUS_ARCHIVED])],
             'match_type' => ['sometimes', Rule::in([Keyword::MATCH_EXACT, Keyword::MATCH_PHRASE, Keyword::MATCH_CONTAINS, Keyword::MATCH_ADVANCED])],
             'configuration' => ['sometimes', 'nullable', 'array'],
         ];

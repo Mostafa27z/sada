@@ -44,7 +44,10 @@ class AnalyticsController extends Controller
 
         $data = $service->getTopKeywords(
             $tenant,
-            (int) $request->get('limit', 10)
+            (int) $request->get('limit', 10),
+            $request->get('date_from'),
+            $request->get('date_to'),
+            $request->get('sentiment')
         );
 
         return $this->success($data);
@@ -56,7 +59,9 @@ class AnalyticsController extends Controller
 
         $data = $service->getTopSources(
             $tenant,
-            (int) $request->get('limit', 10)
+            (int) $request->get('limit', 10),
+            $request->get('date_from'),
+            $request->get('date_to')
         );
 
         return $this->success($data);
