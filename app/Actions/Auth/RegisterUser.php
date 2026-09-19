@@ -61,7 +61,11 @@ class RegisterUser
             // 5. Set as user's current tenant
             $user->forceFill(['current_tenant_id' => $tenant->id])->save();
 
-            event(new Registered($user));
+            try {
+                event(new Registered($user));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed to send registration email: ' . $e->getMessage());
+            }
 
             // 6. Generate access token
             $token = $user->createToken(
