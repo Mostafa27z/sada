@@ -100,7 +100,7 @@ class AiScraperService
         }
 
         // 2. Real Scraper via Apify Multi-Platform Search
-        $apifyToken = config('services.apify.token') ?: env('APIFY_API_TOKEN');
+        $apifyToken = config('services.apify.token') ?: env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2') ?: '';
         if (!empty($apifyToken)) {
             $realResults = $this->scrapeKeywordsViaApify($keywords, $platforms, $countryCode, $apifyToken);
             if (!empty($realResults['posts_by_platform'])) {
@@ -891,7 +891,7 @@ class AiScraperService
         }
 
         // 2. Direct Real Scraper via Apify
-        $apifyToken = config('services.apify.token') ?: env('APIFY_API_TOKEN');
+        $apifyToken = config('services.apify.token') ?: env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2') ?: '';
         if (!empty($apifyToken)) {
             return $this->scrapeViaApify($normalized, $apifyToken, $limit);
         }
@@ -932,6 +932,9 @@ class AiScraperService
             curl_close($ch);
 
             if (!empty($effectiveUrl) && $effectiveUrl !== $url) {
+                if (str_contains($effectiveUrl, '/login') || str_contains($effectiveUrl, 'checkpoint') || str_contains($effectiveUrl, 'security') || str_contains($effectiveUrl, 'consent')) {
+                    return $url;
+                }
                 if (preg_match('#(https://www\.facebook\.com/[^/?]+/posts/[^/?]+)#i', $effectiveUrl, $m)) {
                     return $m[1];
                 }
@@ -972,7 +975,7 @@ class AiScraperService
                     'resultsLimit' => $effectiveLimit,
                     'includeNestedComments' => true,
                     'viewOption' => 'RANKED_UNFILTERED',
-                ], $token);
+                ], $token, 90);
 
                 foreach ($items as $idx => $item) {
                     if (!empty($item['error'])) {
@@ -1075,14 +1078,8 @@ class AiScraperService
 
                         if (!empty($postItems[0])) {
                             $p = $postItems[0];
-                            if (!empty($p['error']) && empty($detectedPrivacyError)) {
-                                $err = strtolower((string) $p['error']);
-                                $errDesc = strtolower((string) ($p['errorDescription'] ?? ''));
-                                if ($err === 'not_available' || str_contains($errDesc, 'small group of people') || str_contains($errDesc, 'deleted') || str_contains($err, 'private')) {
-                                    $detectedPrivacyError = 'المنشور خاص أو ضمن مجموعة مغلقة (Private Group / Restricted) تمنع سياسات فيسبوك الوصول إليها بدون إذن.';
-                                } else {
-                                    $detectedPrivacyError = $p['errorDescription'] ?? $p['error'];
-                                }
+                            if (!empty($p['error'])) {
+                                Log::info("Facebook post metrics info: " . ($p['errorDescription'] ?? $p['error']));
                             }
                             $reactionsCount = (int) ($p['likes'] ?? $p['reactionsCount'] ?? (
                                 ($p['reactionLikeCount'] ?? 0) +
@@ -1133,7 +1130,7 @@ class AiScraperService
                     'directUrls' => [$igUrl],
                     'resultsLimit' => $effectiveLimit,
                     'includeNestedComments' => true,
-                ], $token);
+                ], $token, 90);
 
                 foreach ($items as $idx => $item) {
                     if (!empty($item['error'])) {
@@ -1366,7 +1363,7 @@ class AiScraperService
                     'postURLs' => [$ttUrl],
                     'commentsPerPost' => $effectiveLimit,
                     'maxRepliesPerComment' => 20,
-                ], $token);
+                ], $token, 90);
 
                 foreach ($items as $idx => $item) {
                     if (!empty($item['error'])) {

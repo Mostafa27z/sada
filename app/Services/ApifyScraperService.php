@@ -557,15 +557,11 @@ class ApifyScraperService
         $input = [
             "hashtags" => array_values($cleanHashtags),
             "keywordSearch" => true,
-            "resultsType" => "top_posts", // Target top/viral posts instead of standard feed
+            "resultsType" => "posts",
             "resultsLimit" => max(1, $resultsLimit),
         ];
 
         $items = $this->runActorAndFetchItems("reGe1ST3OBgYZSsZJ", $input);
-        if (empty($items)) {
-            $input["resultsType"] = "posts";
-            $items = $this->runActorAndFetchItems("reGe1ST3OBgYZSsZJ", $input);
-        }
 
         $results = [];
 
@@ -607,7 +603,7 @@ class ApifyScraperService
             "keywords" => array_values($keywords),
             "searchType" => "video",
             "maxItemsPerKeyword" => max(1, $maxItems),
-            "sort" => "popular", // Sort by popularity / engagement
+            "sort" => "mostLiked",
             "region" => "",
             "datePosted" => "this-month",
             "deduplicateAcrossKeywords" => true,
@@ -617,7 +613,7 @@ class ApifyScraperService
 
         $items = $this->runActorAndFetchItems("APtXyRPRKLLe8yrXg", $input);
         if (empty($items)) {
-            $input["sort"] = "date";
+            $input["sort"] = "latest";
             $items = $this->runActorAndFetchItems("APtXyRPRKLLe8yrXg", $input);
         }
 

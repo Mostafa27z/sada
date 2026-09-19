@@ -36,7 +36,7 @@ return [
     ],
 
     'apify' => [
-        'token' => env('APIFY_API_TOKEN'),
+        'token' => env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2'),
     ],
 
     'gemini' => [
