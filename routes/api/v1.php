@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\V1\SourceController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\SuperAdminController;
 use App\Http\Controllers\Api\V1\TenantController;
+use App\Http\Controllers\Api\V1\TenantRequestController;
 use App\Http\Controllers\Api\V1\TenantUserController;
 use App\Http\Controllers\Api\V1\TrendController;
 use App\Http\Controllers\Api\V1\UserRoleController;
@@ -56,9 +57,12 @@ Route::prefix('auth')->group(function () {
     Route::post('/email/resend', [AuthController::class, 'resendVerification']);
 });
 
-// SaaS Plans (Public / Authenticated)
+// SaaS Plans (Public / Read-only)
 Route::get('/plans', [PlanController::class, 'index']);
 Route::get('/plans/{slug}', [PlanController::class, 'show']);
+
+// Public Tenant Registration Request submission
+Route::post('/tenant-requests', [TenantRequestController::class, 'store']);
 
 /*
 |--------------------------------------------------------------------------
@@ -99,6 +103,15 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::put('/tenants/{tenant}', [TenantController::class, 'update']);
     Route::post('/tenants/{tenant}/switch', [TenantController::class, 'switch']);
 
+    // SaaS Plans Management (CRUD & Status Controls - Authenticated Admin)
+    Route::post('/plans', [PlanController::class, 'store']);
+    Route::put('/plans/{id}', [PlanController::class, 'update']);
+    Route::delete('/plans/{id}', [PlanController::class, 'destroy']);
+    Route::post('/plans/{id}/toggle-active', [PlanController::class, 'toggleActive']);
+
+    // Platform User Deletion
+    Route::delete('/users/{user}', [SuperAdminController::class, 'deleteUser']);
+
     // System Permissions listing
     Route::get('/permissions', [RoleController::class, 'permissions']);
 
@@ -107,6 +120,33 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/tenants', [SuperAdminController::class, 'tenants']);
         Route::get('/metrics', [SuperAdminController::class, 'metrics']);
         Route::post('/tenants/{tenant}/plan', [SuperAdminController::class, 'assignPlan']);
+
+        // Tenant Join Requests Management
+        Route::get('/tenant-requests', [TenantRequestController::class, 'index']);
+        Route::post('/tenant-requests/{id}/approve', [TenantRequestController::class, 'approve']);
+        Route::post('/tenant-requests/{id}/reject', [TenantRequestController::class, 'reject']);
+
+        // Overview Analytics & Leaderboards
+        Route::get('/analytics/company-growth', [SuperAdminController::class, 'companyGrowth']);
+        Route::get('/analytics/packages-breakdown', [SuperAdminController::class, 'packagesBreakdown']);
+        Route::get('/tenants/at-risk', [SuperAdminController::class, 'atRiskTenants']);
+        Route::get('/tenants/top-leaderboard', [SuperAdminController::class, 'topLeaderboard']);
+
+        // Global System Settings & Maintenance
+        Route::get('/settings', [SuperAdminController::class, 'getSettings']);
+        Route::put('/settings', [SuperAdminController::class, 'updateSettings']);
+        Route::post('/settings/maintenance', [SuperAdminController::class, 'toggleMaintenance']);
+
+        // System Backups Management
+        Route::get('/backups', [SuperAdminController::class, 'listBackups']);
+        Route::post('/backups/trigger', [SuperAdminController::class, 'triggerBackup']);
+
+        // Infrastructure Health & System Alerts
+        Route::get('/infrastructure', [SuperAdminController::class, 'infrastructureHealth']);
+        Route::get('/system-alerts', [SuperAdminController::class, 'systemAlerts']);
+
+        // Ingestion Analytics
+        Route::get('/analytics/ingestion', [SuperAdminController::class, 'ingestionAnalytics']);
     });
 
     /*
