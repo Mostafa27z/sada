@@ -14,7 +14,8 @@ class GeminiAnalyticsService
 
     public function __construct()
     {
-        $this->apiKey = config('services.gemini.api_key') ?: env('GEMINI_API_KEY') ?: env('GOOGLE_API_KEY', '');
+        $settingKey = class_exists(\App\Models\SystemSetting::class) ? \App\Models\SystemSetting::get('gemini_api_key') : null;
+        $this->apiKey = $settingKey ?: config('services.gemini.api_key') ?: env('GEMINI_API_KEY') ?: env('GOOGLE_API_KEY', '');
     }
 
     /**
@@ -392,13 +393,14 @@ PROMPT;
 """
 
 المطلوب:
-تحليل هذا المنشور بدقة وتقديم خطة تفاعل وصناعة محتوى ذكية لصاحب الحساب/الشركة، للإجابة على: (كيف يجب أن أتفاعل مع هذا الحدث أو المنشور؟ وما المنشور الذي يمكنني نشره لمواكبة الزخم؟)
+تحليل هذا المنشور الفردي بدقة وتقديم خطة تفاعل وصناعة محتوى تكتيكية مخصصة حصراً وحرفياً لمحتوى هذا المنشور وموضوعه بالذات (ممنوع تماماً استخدام عبارات عامة أو ردود جاهزة مكررة).
+يجب أن ترتبط التوصية وصيغة المنشور المقترح مباشرة وبشكل صريح بالتفاصيل والأسماء والأحداث المذكورة في نص هذا المنشور فقط.
 
 قم بإرجاع كائن JSON بالهيكل التالي حصراً:
 {
-    "recommended_action": "توجيه وإجراء عملي وتكتيكي واضح ومباشر للتعامل مع هذا الحدث والاستفادة منه (مثال: نشر تعليق فوري، إعداد فيديو تحليلي، إطلاق مسابقة توقعات، استطلاع رأي)",
-    "engagement_angle": "الزاوية التكتيكية للتفاعل (مثال: محتوى تحليلي ونقاش جماهيري / ركوب موجة التريند / تفاعل رياضي وتوقعات)",
-    "suggested_post": "صيغة منشور احترافي وجذاب جاهز للنشر الفوري لمواكبة الحدث (متضمناً بداية مشوقة، تفاعل مع المتابعين، وهاشتاجات مناسبة)",
+    "recommended_action": "إجراء عملي وتكتيكي مباشر ومخصص تحديداً لموضوع وتفاصيل هذا المنشور للتعامل معه والاستفادة منه (مع ذكر موضوعه نصاً)",
+    "engagement_angle": "الزاوية التكتيكية للتفاعل المحددة لهذا المنشور بالذات",
+    "suggested_post": "صيغة منشور احترافي وجذاب جاهز للنشر الفوري لمواكبة ومناقشة تفاصيل هذا المنشور (متضمناً سؤالاً تفاعلياً وهاشتاجات ذات صلة)",
     "hashtags": ["#هاشتاج1", "#هاشتاج2", "#هاشتاج3"]
 }
 PROMPT;
@@ -416,12 +418,26 @@ PROMPT;
             }
         }
 
-        // Contextual smart fallback
+        // Contextual dynamic fallback derived directly from the post text
+        $cleanText = preg_replace('/https?:\/\/\S+|[#@]/u', ' ', $text);
+        $cleanText = trim(preg_replace('/\s+/u', ' ', $cleanText));
+        $firstSentence = preg_split('/[.!?؟\n]/u', $cleanText)[0] ?? $cleanText;
+        $snippet = mb_substr(trim($firstSentence), 0, 75);
+        if (mb_strlen($firstSentence) > 75) {
+            $snippet .= '...';
+        }
+        if (empty($snippet)) {
+            $snippet = 'هذا المنشور المتداول';
+        }
+
+        $tagCandidate = preg_replace('/[^\p{Arabic}\p{L}0-9_]/u', '', mb_substr($snippet, 0, 20));
+        $tag = !empty($tagCandidate) ? '#' . $tagCandidate : '#تريند';
+
         return [
-            "recommended_action" => "نشر منشور تفاعلي سريع يواكب مجريات هذا الحدث، مع توجيه سؤال نقاشي للجمهور لزيادة التفاعل والمشاركات.",
-            "engagement_angle" => "مواكبة الحدث وتفعيل النقاش الجماهيري",
-            "suggested_post" => "ما رأيكم في مجريات هذه النتيجة؟ شاركونا توقعاتكم وآرائكم في التعليقات! 👇",
-            "hashtags" => ["#تريند", "#تفاعل_معنا"],
+            "recommended_action" => "المشاركة في التفاعل مع هذا الطرح (\"{$snippet}\") بتقديم رؤية موضوعية تثري النقاش وترصد اتجاهات المتابعين.",
+            "engagement_angle" => "مواكبة الطرح وإثراء النقاش حول: {$snippet}",
+            "suggested_post" => "تفاعل واسع وآراء متداولة حول: \"{$snippet}\".. برأيكم كيف ترون تطورات هذا الأمر؟ شاركونا وجهة نظركم! 💬👇\n{$tag} #نقاش",
+            "hashtags" => [$tag, "#نقاش"],
         ];
     }
 }
