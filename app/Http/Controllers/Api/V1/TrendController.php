@@ -138,4 +138,24 @@ class TrendController extends Controller
 
         return $this->success(null, __('messages.deleted'));
     }
+
+    /**
+     * Synthesize all monitored trend posts into a unified Master Trend Post.
+     */
+    public function generateMasterPost(\Illuminate\Http\Request $request, \App\Services\GeminiAnalyticsService $geminiService)
+    {
+        $request->validate([
+            'topic' => ['required', 'string'],
+            'posts' => ['required', 'array'],
+            'tone' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        $result = $geminiService->generateMasterTrendPost(
+            $request->input('topic'),
+            $request->input('posts', []),
+            $request->input('tone')
+        );
+
+        return $this->success($result, 'Master trend post generated successfully.');
+    }
 }

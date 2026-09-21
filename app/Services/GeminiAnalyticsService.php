@@ -440,5 +440,131 @@ PROMPT;
             "hashtags" => [$tag, "#نقاش"],
         ];
     }
+
+    /**
+     * Synthesize and generate a comprehensive Master Post across all trend posts.
+     */
+    public function generateMasterTrendPost(string $topic, array $postsList, ?string $tone = null): array
+    {
+        $postsSummary = "";
+        $count = 0;
+        foreach ($postsList as $idx => $post) {
+            if ($count >= 15) break;
+            $text = is_array($post) ? ($post['text'] ?? '') : (string)$post;
+            $author = is_array($post) ? ($post['author'] ?? 'مصدر') : 'مصدر';
+            if (empty(trim($text))) continue;
+            $cleanText = mb_substr(trim(preg_replace('/\s+/u', ' ', $text)), 0, 160);
+            $postsSummary .= ($count + 1) . ". [{$author}]: {$cleanText}\n";
+            $count++;
+        }
+
+        $toneDesc = match($tone) {
+            'analytical' => 'نبرة تحليلية إخبارية رصينة تركز على الأرقام والنتائج والوقائع وترتيب الأحداث',
+            'concise' => 'نبرة سريعة وموجزة ومباشرة تناسب منشورات الأخبار العاجلة وسريعة القراءة',
+            default => 'نبرة تفاعلية حيوية كصانع محتوى جماهيري محترف يثير النقاش ويشعل التفاعل بلغة عربية سلسلة وحقيقية',
+        };
+
+        $prompt = <<<PROMPT
+أنت كاتب محتوى وصانع رأي رقمي محترف (Professional Social Media Content Creator & Journalist).
+
+الهدف: كتابة منشور موحد وواقعي (Master Post) حول موضوع التريند: "{$topic}"
+النبرة المطلوبة: {$toneDesc}
+
+إليك المنشورات والآراء التي نشرها الناس فعلياً حول هذا التريند:
+\"\"\"
+{$postsSummary}
+\"\"\"
+
+تعليمات الصياغة البشرية الاحترافية:
+1. اقرأ المنشورات أعلاه جيداً، واستخرج الوقائع الفعلية المحددة المذكورة (مثل: أسماء الفرق، الأهداف، اللاعبين، القرارات، أو الأحداث الميدانية بالتحديد كما وردت).
+2. اكتب المنشور وكأنك إنسان يتابع الحدث بشغف واحترافية:
+   - ابدأ بافتتاحية طبيعية ومثيرة عن صلب ما حدث فعلاً في الميدان.
+   - اربط الوقائع بسياقها (مثال: إذا كان فوز فريق وصدارته، تحدث عن مجريات المباراة، أو النقطة الحاسمة، وكيف أثر ذلك على الترتيب أو المشهد العام).
+   - تجنب العبارات النمطية الجافة المعلبة (مثل: "رصدنا تفاعلاً واسعاً عبر مختلف المنصات..."). بل اكتب مباشرة عن الحدث كما يتحدث المتابعون والخبراء.
+   - لا تضع أي رموز تعبيرية (Emojis) أو أشكال بيانية مزخرفة؛ اجعل قوة المنشور في لغته وصياغته ومحتواه الحقيقي فقط.
+3. اختم بسؤال تفاعلي ذكي وجذاب موجه للمتابعين في صلب الحدث ليشاركوا آراءهم.
+4. ضع الهاشتاجات الأكثر ملاءمة في السطر الأخير.
+
+أرجع النتيجة حصراً بصيغة JSON نظيفة بالهيكل التالي:
+{
+    "trend_summary": "ملخص الحدث في سطرين واقعيين ومباشرين",
+    "master_post": "نص المنشور الكامل والجاهز للنشر مباشرة (صياغة بشرية واقعية متدفقة)",
+    "engagement_question": "سؤال تفاعلي ذكي موجه للمتابعين",
+    "key_points": ["الواقعة الأساسية الأولى المستخلصة", "الواقعة الثانية", "الواقعة الثالثة"],
+    "hashtags": ["#هاشتاج1", "#هاشتاج2", "#هاشتاج3"]
+}
+PROMPT;
+
+        $messages = [
+            ['role' => 'user', 'content' => $prompt],
+        ];
+
+        $content = $this->callGemini($messages, 45);
+        if ($content) {
+            $cleaned = preg_replace('/```json|```/', '', $content);
+            $result = json_decode(trim($cleaned), true);
+            if (is_array($result) && !empty($result['master_post'])) {
+                return $result;
+            }
+        }
+
+        // Contextual human-like synthesis fallback derived directly from topic & posts
+        $topicClean = trim(preg_replace('/^(?:رصد\s+)?تريند:\s*/u', '', $topic));
+        $tag = '#' . preg_replace('/[^\p{Arabic}\p{L}0-9_]/u', '', mb_substr($topicClean, 0, 20));
+        if (empty(trim($tag, '#'))) $tag = '#تريند';
+
+        // Extract key factual sentences from the actual posts
+        $keyHighlights = [];
+        foreach ($postsList as $p) {
+            $txt = is_array($p) ? ($p['text'] ?? '') : (string)$p;
+            // Strip emojis and urls
+            $txt = preg_replace('/[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F1E0}-\x{1F1FF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{1F900}-\x{1F9FF}\x{1FA70}-\x{1FAFF}]/u', '', $txt);
+            $firstSentence = preg_split('/[.!?؟\n]/u', trim($txt))[0] ?? '';
+            $firstSentence = trim($firstSentence);
+            if (mb_strlen($firstSentence) > 15 && mb_strlen($firstSentence) < 110) {
+                if (!in_array($firstSentence, $keyHighlights)) {
+                    $keyHighlights[] = $firstSentence;
+                }
+            }
+            if (count($keyHighlights) >= 4) break;
+        }
+
+        $leadStory = !empty($keyHighlights[0]) ? $keyHighlights[0] : "تطورات هامة ومستجدات متسارعة تحيط بـ {$topicClean}";
+        $secondStory = !empty($keyHighlights[1]) ? $keyHighlights[1] : "";
+        $thirdStory = !empty($keyHighlights[2]) ? $keyHighlights[2] : "";
+
+        if ($tone === 'analytical') {
+            $masterDraft = "قراءة في مشهد ({$topicClean}):\n\n"
+                . "{$leadStory}، وسط متابعة دقيقة للتفاصيل الفنية والنتائج المسجلة.\n\n"
+                . ($secondStory ? "على الصعيد الميداني، شهدت الأحداث: {$secondStory}.\n\n" : "")
+                . ($thirdStory ? "فيما تعكس المعطيات: {$thirdStory}.\n\n" : "")
+                . "برأيكم، كيف تنعكس هذه المؤشرات على المشهد القادم؟ شاركونا تقييمكم في التعليقات.\n\n"
+                . "{$tag} #تحليل #متابعة";
+        } elseif ($tone === 'concise') {
+            $masterDraft = "موجز ({$topicClean}):\n\n"
+                . "• {$leadStory}\n"
+                . ($secondStory ? "• {$secondStory}\n" : "")
+                . ($thirdStory ? "• {$thirdStory}\n\n" : "\n")
+                . "ما رأيكم في مجريات الأحداث الأخيرة؟\n\n"
+                . "{$tag}";
+        } else {
+            // Engaging human tone
+            $masterDraft = "{$leadStory}!\n\n"
+                . ($secondStory ? "المشهد يزداد إثارة مع: {$secondStory}.\n\n" : "")
+                . ($thirdStory ? "وكما تشير التطورات: {$thirdStory}.\n\n" : "")
+                . "تفاعل واسع وردود أفعال متباينة بين المتابعين.. برأيكم، هل تستمر هذه المعطيات بنفس الوتيرة أم أن هناك مفاجآت قادمة؟ شاركونا توقعاتكم وتفاعلكم بالتعليقات!\n\n"
+                . "{$tag} #تفاعل #متابعة";
+        }
+
+        $question = "ما هي توقعاتكم لنتائج وتطورات ({$topicClean}) خلال المرحلة القادمة؟";
+
+        return [
+            "trend_summary" => "{$leadStory} وتفاعل متواصل من الجمهور والمهتمين.",
+            "master_post" => $masterDraft,
+            "engagement_question" => $question,
+            "key_points" => !empty($keyHighlights) ? array_slice($keyHighlights, 0, 3) : ["مستجدات وتطورات " . $topicClean, "ردود أفعال الجمهور", "تحليل المشهد الميداني"],
+            "hashtags" => [$tag, "#تفاعل", "#متابعة"],
+        ];
+    }
 }
 

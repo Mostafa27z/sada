@@ -224,6 +224,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::prefix('trends')->group(function () {
             Route::get('/', [TrendController::class, 'index']);
             Route::post('/analyze', [TrendController::class, 'analyze']);
+            Route::post('/master-post', [TrendController::class, 'generateMasterPost']);
             Route::get('/{id}', [TrendController::class, 'show']);
             Route::delete('/{id}', [TrendController::class, 'destroy']);
         });
