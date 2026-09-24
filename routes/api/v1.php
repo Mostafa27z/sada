@@ -9,9 +9,11 @@ use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\CollectionController;
 use App\Http\Controllers\Api\V1\CommentController;
+use App\Http\Controllers\Api\V1\ComplaintController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\KeywordController;
 use App\Http\Controllers\Api\V1\PlanController;
+use App\Http\Controllers\Api\V1\PublicComplaintController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SourceController;
@@ -63,6 +65,10 @@ Route::get('/plans/{slug}', [PlanController::class, 'show']);
 
 // Public Tenant Registration Request submission
 Route::post('/tenant-requests', [TenantRequestController::class, 'store']);
+
+// Public QR Code Generator & Customer Complaint Submissions
+Route::get('/public/qr-code', [PublicComplaintController::class, 'generateQrCode']);
+Route::post('/public/complaints', [PublicComplaintController::class, 'store']);
 
 /*
 |--------------------------------------------------------------------------
@@ -219,6 +225,12 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/comments', [CommentController::class, 'index']);
         Route::post('/comments/scrape', [CommentController::class, 'scrape']);
         Route::post('/comments/ai-recommendation', [CommentController::class, 'generateAiRecommendation']);
+
+        // Complaints Module
+        Route::get('/complaints', [ComplaintController::class, 'index']);
+        Route::get('/complaints/{id}', [ComplaintController::class, 'show']);
+        Route::patch('/complaints/{id}/status', [ComplaintController::class, 'updateStatus']);
+        Route::delete('/complaints/{id}', [ComplaintController::class, 'destroy']);
 
         // Topic Trends Discovery Module
         Route::prefix('trends')->group(function () {
