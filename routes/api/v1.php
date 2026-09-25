@@ -228,6 +228,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
         // Complaints Module
         Route::get('/complaints', [ComplaintController::class, 'index']);
+        Route::get('/complaints/summary', [ComplaintController::class, 'summary']);
+        Route::post('/complaints/summary/regenerate', [ComplaintController::class, 'regenerateSummary']);
         Route::get('/complaints/{id}', [ComplaintController::class, 'show']);
         Route::patch('/complaints/{id}/status', [ComplaintController::class, 'updateStatus']);
         Route::delete('/complaints/{id}', [ComplaintController::class, 'destroy']);

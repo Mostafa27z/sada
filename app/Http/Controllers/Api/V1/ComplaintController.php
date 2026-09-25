@@ -9,6 +9,11 @@ use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
+use App\Http\Resources\TenantComplaintSummaryResource;
+use App\Models\TenantComplaintSummary;
+use App\Services\ComplaintAiService;
+use App\Support\TenantContext;
+
 class ComplaintController extends Controller
 {
     use ApiResponse;
@@ -27,6 +32,14 @@ class ComplaintController extends Controller
             $query->where('status', $request->input('status'));
         }
 
+        if ($request->filled('priority')) {
+            $query->where('priority', $request->input('priority'));
+        }
+
+        if ($request->filled('rate')) {
+            $query->where('rate', $request->input('rate'));
+        }
+
         if ($request->filled('search')) {
             $search = $request->input('search');
             $query->where(function ($q) use ($search) {
@@ -40,6 +53,56 @@ class ComplaintController extends Controller
         $complaints = $query->latest()->paginate($request->input('per_page', 20));
 
         return $this->paginated($complaints, ComplaintResource::class);
+    }
+
+    /**
+     * Get aggregated AI summary and recommended solutions for the current tenant.
+     *
+     * @return JsonResponse
+     */
+    public function summary(): JsonResponse
+    {
+        $tenantId = TenantContext::getTenantId();
+        $summary = TenantComplaintSummary::where('tenant_id', $tenantId)->first();
+
+        if (!$summary) {
+            return $this->success([
+                'tenant_id' => $tenantId,
+                'summary' => 'No complaint summary generated yet.',
+                'recommended_solutions' => [],
+                'total_complaints_analyzed' => 0,
+                'last_complaint_id' => null,
+                'updated_at' => null,
+            ], 'No complaint summary available');
+        }
+
+        return $this->success(new TenantComplaintSummaryResource($summary));
+    }
+
+    /**
+     * Manually trigger on-demand AI summary regeneration.
+     *
+     * @param ComplaintAiService $aiService
+     * @return JsonResponse
+     */
+    public function regenerateSummary(ComplaintAiService $aiService): JsonResponse
+    {
+        $tenantId = TenantContext::getTenantId();
+        $tenant = \App\Models\Tenant::find($tenantId);
+
+        if (!$tenant) {
+            return $this->error('Tenant workspace not found', 404);
+        }
+
+        $latestComplaint = Complaint::where('tenant_id', $tenantId)->latest()->first();
+
+        if (!$latestComplaint) {
+            return $this->error('No complaints recorded for this tenant yet', 400);
+        }
+
+        $summary = $aiService->updateTenantSummary($tenant, $latestComplaint);
+
+        return $this->success(new TenantComplaintSummaryResource($summary), 'Tenant complaint summary regenerated successfully');
     }
 
     /**

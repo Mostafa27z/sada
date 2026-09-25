@@ -19,6 +19,7 @@ class StoreComplaintRequest extends FormRequest
             'email' => ['required', 'email', 'max:255'],
             'phone' => ['nullable', 'string', 'max:50'],
             'opinion' => ['required', 'string', 'max:5000'],
+            'rate' => ['required', 'integer', 'min:1', 'max:5'],
         ];
     }
 }

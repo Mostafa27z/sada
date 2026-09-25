@@ -73,8 +73,11 @@ class PublicComplaintController extends Controller
             'email' => $validated['email'],
             'phone' => $validated['phone'] ?? null,
             'opinion' => $validated['opinion'],
+            'rate' => $validated['rate'],
             'status' => 'pending',
         ]);
+
+        \App\Jobs\ProcessComplaintAiJob::dispatch($complaint);
 
         return $this->created($complaint, 'Complaint submitted successfully');
     }

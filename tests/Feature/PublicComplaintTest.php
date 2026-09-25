@@ -47,6 +47,7 @@ class PublicComplaintTest extends TestCase
             'email' => 'john@example.com',
             'phone' => '+1234567890',
             'opinion' => 'The service was delayed, please resolve this issue.',
+            'rate' => 2,
         ];
 
         $response = $this->postJson('/api/v1/public/complaints', $payload);
@@ -61,6 +62,7 @@ class PublicComplaintTest extends TestCase
                 'email' => 'john@example.com',
                 'phone' => '+1234567890',
                 'opinion' => 'The service was delayed, please resolve this issue.',
+                'rate' => 2,
                 'status' => 'pending',
             ],
         ]);
@@ -68,6 +70,7 @@ class PublicComplaintTest extends TestCase
         $this->assertDatabaseHas('complaints', [
             'tenant_id' => $tenant->id,
             'email' => 'john@example.com',
+            'rate' => 2,
             'opinion' => 'The service was delayed, please resolve this issue.',
         ]);
     }
@@ -77,7 +80,7 @@ class PublicComplaintTest extends TestCase
         $response = $this->postJson('/api/v1/public/complaints', []);
 
         $response->assertStatus(422);
-        $response->assertJsonValidationErrors(['tenant_id', 'name', 'email', 'opinion']);
+        $response->assertJsonValidationErrors(['tenant_id', 'name', 'email', 'opinion', 'rate']);
     }
 
     public function test_tenant_can_list_their_complaints(): void
@@ -95,6 +98,8 @@ class PublicComplaintTest extends TestCase
             'email' => 'jane@example.com',
             'phone' => '123456',
             'opinion' => 'Bad experience with support.',
+            'rate' => 1,
+            'priority' => 'negative',
             'status' => 'pending',
         ]);
 
@@ -107,7 +112,7 @@ class PublicComplaintTest extends TestCase
         $response->assertJsonStructure([
             'success',
             'data' => [
-                '*' => ['id', 'tenant_id', 'name', 'email', 'phone', 'opinion', 'status', 'created_at'],
+                '*' => ['id', 'tenant_id', 'name', 'email', 'phone', 'opinion', 'rate', 'priority', 'status', 'created_at'],
             ],
             'meta' => ['current_page', 'total'],
         ]);
@@ -127,6 +132,7 @@ class PublicComplaintTest extends TestCase
             'name' => 'Alice Brown',
             'email' => 'alice@example.com',
             'opinion' => 'Needs follow up.',
+            'rate' => 3,
             'status' => 'pending',
         ]);
 
@@ -143,5 +149,31 @@ class PublicComplaintTest extends TestCase
             'id' => $complaint->id,
             'status' => 'resolved',
         ]);
+    }
+
+    public function test_tenant_can_get_complaint_summary(): void
+    {
+        $tenant = Tenant::factory()->create();
+        $user = User::factory()->create([
+            'current_tenant_id' => $tenant->id,
+            'status' => 'active',
+        ]);
+        $user->tenants()->attach($tenant->id);
+
+        \App\Models\TenantComplaintSummary::create([
+            'tenant_id' => $tenant->id,
+            'summary' => 'Overall complaints relate to response latency.',
+            'recommended_solutions' => ['Increase support staff', 'Set up automated email responses'],
+            'total_complaints_analyzed' => 1,
+        ]);
+
+        Sanctum::actingAs($user);
+
+        $response = $this->withHeaders(['X-Tenant-ID' => $tenant->id])
+            ->getJson('/api/v1/complaints/summary');
+
+        $response->assertStatus(200);
+        $response->assertJsonPath('data.summary', 'Overall complaints relate to response latency.');
+        $response->assertJsonCount(2, 'data.recommended_solutions');
     }
 }

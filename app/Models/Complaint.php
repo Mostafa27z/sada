@@ -16,6 +16,9 @@ class Complaint extends Model
         'email',
         'phone',
         'opinion',
+        'rate',
+        'priority',
+        'ai_recommendation',
         'status',
     ];
 
@@ -25,6 +28,7 @@ class Complaint extends Model
      * @var array<string, string>
      */
     protected $casts = [
+        'rate' => 'integer',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
