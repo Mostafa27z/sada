@@ -39,15 +39,19 @@ This module allows tenant staff members to collaborate in internal group chats w
 - If `sender_type === "ai"`:
   - Display AI Consultant avatar (or robot icon), badge "مستشار التسويق الذكي", timestamp, and the AI message bubble aligned to the left.
 
-### B. Rendering AI "Thinking Steps" Accordion:
-Inside any message where `sender_type === "ai"` and `thinking_steps` has items:
-1. Display a collapsible card above the main response text:
+### B. Rendering AI "Thinking Steps" & Quick Follow-ups:
+Inside any message where `sender_type === "ai"`:
+1. **Collapsible Thinking Steps**:
    - Header: `🧠 خطوات تفكير المستشار الذكي (انقر للعرض)`
-2. When expanded, render each step sequentially:
-   - **Step Number & Title**: e.g., `خطوة 1: استرجاع شكاوى العملاء ومؤشرات الرضا`
-   - **Data Source Badge**: e.g., `<Badge variant="outline">سجلات الشكاوى والتقييمات</Badge>`
-   - **Reasoning Detail**: e.g., `تم فحص 10 شكاوى حديثة، ومتوسط التقييم 2.4/5، مع تركز الاستياء حول تأخر التوصيل.`
-3. Below the thinking steps, render the final `message` (supports Markdown).
+   - When expanded, render each step sequentially:
+     - **Step Number & Title**: e.g., `خطوة 1: تحليل هوية المنتج وزاوية الإقناع`
+     - **Data Source Badge**: e.g., `<Badge variant="outline">معايير صناعة المحتوى الإعلاني</Badge>`
+     - **Reasoning Detail**: Detailed reasoning tailored directly to the user's specific request.
+2. **Main Response**:
+   - Render the final `message` (supports rich Markdown: bold, bullet points, headers, emojis).
+3. **Quick Follow-up Action Pills (`suggested_followups`)**:
+   - Under the AI message, render clickable pill buttons from `suggested_followups` (e.g., `[تحويل المنشور إلى سكريبت تيك توك]`, `[صياغة تغريدة سريعة لمنصة X]`).
+   - When the user clicks any pill, it automatically populates or sends a message to the chat `@ai <pill_text>`.
 
 ---
 

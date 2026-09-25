@@ -20,6 +20,7 @@ class ChatMessageResource extends JsonResource
             ] : null,
             'message' => $this->message,
             'thinking_steps' => $this->thinking_steps ?? [],
+            'suggested_followups' => $this->metadata['suggested_followups'] ?? [],
             'metadata' => $this->metadata ?? null,
             'created_at' => $this->created_at?->toISOString(),
         ];

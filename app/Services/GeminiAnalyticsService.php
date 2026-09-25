@@ -9,11 +9,12 @@ class GeminiAnalyticsService
 {
     protected string $apiKey;
     protected string $apiUrl = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-    protected string $model = 'gemini-flash-latest';
-    protected array $fallbackModels = ['gemini-flash-latest', 'gemini-3.6-flash'];
+    protected string $model = 'gemini-2.5-flash';
+    protected array $fallbackModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
 
     public function __construct()
     {
+        $this->model = env('GEMINI_MODEL', 'gemini-2.5-flash');
         $settingKey = class_exists(\App\Models\SystemSetting::class) ? \App\Models\SystemSetting::get('gemini_api_key') : null;
         $this->apiKey = $settingKey ?: config('services.gemini.api_key') ?: env('GEMINI_API_KEY') ?: env('GOOGLE_API_KEY', '');
     }

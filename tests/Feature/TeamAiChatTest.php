@@ -236,4 +236,42 @@ class TeamAiChatTest extends TestCase
         $removeResponse->assertStatus(200);
         $this->assertFalse($room->fresh()->hasUser($this->memberUser->id));
     }
+
+    public function test_copywriting_prompt_fulfills_direct_command_without_complaint_bias(): void
+    {
+        $room = ChatRoom::create([
+            'tenant_id' => $this->tenant->id,
+            'created_by' => $this->adminUser->id,
+            'title' => 'غرفة الحملات',
+            'is_ai_enabled' => true,
+        ]);
+        $room->users()->attach($this->adminUser->id, ['role' => 'admin']);
+
+        Sanctum::actingAs($this->adminUser);
+
+        $response = $this->withHeaders(['X-Tenant-ID' => $this->tenant->id])
+            ->postJson("/api/v1/chats/{$room->id}/messages", [
+                'message' => '@ai ابعت لي صياغة منشور كامل للتسويق لمعجون اسنان سيجنال',
+            ]);
+
+        $response->assertStatus(201);
+        $response->assertJsonStructure([
+            'success',
+            'data' => [
+                'ai_message' => [
+                    'id',
+                    'message',
+                    'thinking_steps' => [
+                        '*' => ['step', 'title', 'detail', 'data_source'],
+                    ],
+                    'suggested_followups',
+                ],
+            ],
+        ]);
+
+        $aiMessage = $response->json('data.ai_message.message');
+        // Verify it addresses the product/copywriting request
+        $this->assertNotEmpty($aiMessage);
+        $this->assertNotEmpty($response->json('data.ai_message.suggested_followups'));
+    }
 }
