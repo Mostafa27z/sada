@@ -68,7 +68,7 @@ class ComplaintController extends Controller
         if (!$summary) {
             return $this->success([
                 'tenant_id' => $tenantId,
-                'summary' => 'No complaint summary generated yet.',
+                'summary' => 'لا يوجد ملخص لشكاوى العملاء حتى الآن.',
                 'recommended_solutions' => [],
                 'total_complaints_analyzed' => 0,
                 'last_complaint_id' => null,

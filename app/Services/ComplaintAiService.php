@@ -29,16 +29,17 @@ Evaluate:
    - 'neutral': General inquiry or minor suggestion.
    - 'negative': Customer is dissatisfied or complaining (e.g. rate 1-2 or negative tone).
    - 'crisis': Severe operational failure, legal threat, harassment, or extreme urgency.
-2. ai_recommendation: Concise, step-by-step recommendation for the customer support team on how to handle this specific client (e.g., offer a refund, call directly within 1 hour, thank the user, escalate to manager).
+2. ai_recommendation: Concise, step-by-step recommendation for the customer support team on how to handle this specific client.
+   IMPORTANT: The `ai_recommendation` field MUST BE WRITTEN IN CLEAR, PROFESSIONAL ARABIC (اللغة العربية).
 
 Return valid JSON strictly matching:
 {
   \"priority\": \"positive|neutral|negative|crisis\",
-  \"ai_recommendation\": \"string\"
+  \"ai_recommendation\": \"نص التوصية باللغة العربية\"
 }";
 
         $messages = [
-            ['role' => 'system', 'content' => 'You analyze customer feedback and return structured JSON.'],
+            ['role' => 'system', 'content' => 'You analyze customer feedback and return structured JSON. All recommendations must be in Arabic.'],
             ['role' => 'user', 'content' => $prompt],
         ];
 
@@ -69,7 +70,7 @@ Return valid JSON strictly matching:
 
         return [
             'priority' => $fallbackPriority,
-            'ai_recommendation' => 'Contact customer via email/phone to acknowledge feedback and address concerns.',
+            'ai_recommendation' => 'التواصل مع العميل عبر البريد الإلكتروني أو الهاتف لمتابعة الملاحظات ومعالجة المشكلة.',
         ];
     }
 
@@ -84,39 +85,41 @@ Return valid JSON strictly matching:
     {
         $existing = TenantComplaintSummary::where('tenant_id', $tenant->id)->first();
 
-        $previousSummaryText = $existing?->summary ?? 'No previous summary recorded.';
-        $previousSolutions = is_array($existing?->recommended_solutions) ? json_encode($existing->recommended_solutions, JSON_UNESCAPED_UNICODE) : 'None';
+        $previousSummaryText = $existing?->summary ?? 'لا يوجد ملخص سابق مسجل.';
+        $previousSolutions = is_array($existing?->recommended_solutions) ? json_encode($existing->recommended_solutions, JSON_UNESCAPED_UNICODE) : 'لا يوجد';
 
-        $prompt = "You are a Chief Customer Experience Officer analyzing feedback for tenant '{$tenant->name}'.
+        $prompt = "You are a Chief Customer Experience Officer analyzing feedback for company '{$tenant->name}'.
 
-We have an EXISTING SUMMARY of company complaints:
+EXISTING SUMMARY (ملخص سابق):
 \"{$previousSummaryText}\"
 
-PREVIOUS RECOMMENDED SOLUTIONS:
+PREVIOUS RECOMMENDED SOLUTIONS (حلول مقترحة سابقة):
 {$previousSolutions}
 
-A NEW COMPLAINT HAS BEEN SUBMITTED:
+NEW COMPLAINT SUBMITTED (شكوى جديدة):
 - Customer: {$latestComplaint->name} ({$latestComplaint->email})
 - Rating: {$latestComplaint->rate}/5
 - Priority: {$latestComplaint->priority}
 - Customer Feedback: \"{$latestComplaint->opinion}\"
 
 Tasks:
-1. Update the overall tenant complaints summary incrementally, keeping track of main recurring issues, customer sentiment trends, and common customer dissatisfaction points.
-2. Provide 3 to 5 clear, high-level action recommendations for management to fix root causes across the company.
+1. Update the overall tenant complaints summary incrementally in Arabic (اللغة العربية), analyzing main recurring issues, customer sentiment trends, and root causes.
+2. Provide 3 to 5 clear, high-level action recommendations for company management written in Arabic (اللغة العربية).
+
+IMPORTANT: Both `summary` and `recommended_solutions` MUST BE WRITTEN ENTIRELY IN ARABIC (اللغة العربية).
 
 Return valid JSON strictly matching:
 {
-  \"summary\": \"Text summary of overall tenant complaint patterns and trends\",
+  \"summary\": \"ملخص شامل باللغة العربية للشكاوى والاتجاهات العامّة\",
   \"recommended_solutions\": [
-    \"Actionable solution 1\",
-    \"Actionable solution 2\",
-    \"Actionable solution 3\"
+    \"الحل الموصى به الأول باللغة العربية\",
+    \"الحل الموصى به الثاني باللغة العربية\",
+    \"الحل الموصى به الثالث باللغة العربية\"
   ]
 }";
 
         $messages = [
-            ['role' => 'system', 'content' => 'You provide executive-level customer experience summaries in JSON.'],
+            ['role' => 'system', 'content' => 'You provide executive-level customer experience summaries and solutions in Arabic.'],
             ['role' => 'user', 'content' => $prompt],
         ];
 

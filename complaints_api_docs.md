@@ -4,6 +4,31 @@ This document describes the design, database schema, AI processing flow, API end
 
 ---
 
+## What's New (Latest Additions & Enhancements)
+
+> [!NOTE]
+> The following features have been added to the Complaints Module:
+
+1. **Customer Rating Field (`rate`)**:
+   - Added required `rate` parameter (integer from `1` to `5`) in `POST /api/v1/public/complaints`.
+
+2. **Automated Gemini AI Sentiment & Handling Recommendations**:
+   - **Priority Classification**: Automatically evaluates sentiment & urgency (`positive`, `neutral`, `negative`, or `crisis`).
+   - **Handling Guidance (`ai_recommendation`)**: Generates tailored, step-by-step instructions for support agents on how to resolve each client's specific complaint.
+
+3. **Incremental Tenant AI Summary & Actionable Solutions**:
+   - Added `tenant_complaint_summaries` table storing overall complaint patterns and 3 to 5 high-level management solution recommendations per tenant.
+   - **Incremental Algorithm**: When a new complaint arrives, a background job (`ProcessComplaintAiJob`) combines the previous summary with the latest complaint to update insights efficiently without re-analyzing all historical records.
+
+4. **New Tenant Endpoints**:
+   - `GET /api/v1/complaints/summary`: Returns current AI executive summary & recommended solutions.
+   - `POST /api/v1/complaints/summary/regenerate`: Forces on-demand AI summary recalculation.
+
+5. **Enhanced Listing Filters**:
+   - Added `priority` (`positive`, `neutral`, `negative`, `crisis`) and `rate` (`1` to `5`) query parameters to `GET /api/v1/complaints`.
+
+---
+
 ## Architecture & Data Flow Logic
 
 ```
@@ -140,11 +165,11 @@ Returns the aggregated AI summary and recommended action plan for management.
   "data": {
     "id": 1,
     "tenant_id": 1,
-    "summary": "The majority of recent customer complaints revolve around order dispatch delays and delayed customer support responses.",
+    "summary": "تتركز معظم شكاوى العملاء الأخيرة حول التأخير في شحن الطلبات وتأخر استجابة فريق الدعم الفني، مما تسبب في انخفاض تقييمات بعض العملاء إلى 1 و 2.",
     "recommended_solutions": [
-      "Set up automated email notifications for order status updates.",
-      "Increase customer service staff during peak hours (12 PM - 5 PM).",
-      "Implement a priority response protocol for customer ratings of 1 or 2."
+      "تفعيل التنبيهات الآلية للعملاء بخصوص تحديثات حالة الشحن فور تغييرها.",
+      "زيادة عدد موظفي خدمة العملاء خلال ساعات الذروة (من 12 ظهراً حتى 5 مساءً).",
+      "إعادة التواصل المباشر هاتفياً مع العملاء من ذوي التقييم المنخفض (1 أو 2) خلال ساعة واحدة من تقديم الشكوى."
     ],
     "total_complaints_analyzed": 14,
     "last_complaint_id": 42,
