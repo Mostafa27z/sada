@@ -7,6 +7,8 @@ use App\Http\Controllers\Api\V1\ApiKeyController;
 use App\Http\Controllers\Api\V1\ArticleController;
 use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\ChatRoomController;
+use App\Http\Controllers\Api\V1\ChatMessageController;
 use App\Http\Controllers\Api\V1\CollectionController;
 use App\Http\Controllers\Api\V1\CommentController;
 use App\Http\Controllers\Api\V1\ComplaintController;
@@ -263,5 +265,16 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('/collections/{id}/sync', [CollectionController::class, 'sync']);
         Route::post('/collections/{id}/articles/{articleId}', [CollectionController::class, 'addArticle']);
         Route::delete('/collections/{id}/articles/{articleId}', [CollectionController::class, 'removeArticle']);
+
+        // Team AI Chat Rooms Module
+        Route::get('/chats', [ChatRoomController::class, 'index']);
+        Route::post('/chats', [ChatRoomController::class, 'store']);
+        Route::get('/chats/{id}', [ChatRoomController::class, 'show']);
+        Route::put('/chats/{id}', [ChatRoomController::class, 'update']);
+        Route::delete('/chats/{id}', [ChatRoomController::class, 'destroy']);
+        Route::post('/chats/{id}/users', [ChatRoomController::class, 'addUsers']);
+        Route::delete('/chats/{id}/users/{userId}', [ChatRoomController::class, 'removeUser']);
+        Route::get('/chats/{id}/messages', [ChatMessageController::class, 'index']);
+        Route::post('/chats/{id}/messages', [ChatMessageController::class, 'send']);
     });
 });
