@@ -252,12 +252,20 @@ class CollectionController extends Controller
         $rawPlats = !empty($data['platforms']) ? $data['platforms'] : explode(',', $collection->platform ?: 'x,facebook,instagram,web');
         $platforms = array_values(array_filter(array_map('trim', (array)$rawPlats)));
 
+        $limit = intval($collection->comments_limit ?: ($data['comments_limit'] ?? 50));
+        if ($limit <= 0) {
+            $limit = 50;
+        }
+
         \App\Jobs\ScrapeKeywordsJob::dispatch(
             $collection->tenant_id,
             $keywordsToScrape,
             !empty($platforms) ? $platforms : ['x', 'facebook', 'instagram', 'web'],
             $collection->country ?: 'SA',
-            $collection->id
+            $collection->id,
+            $collection->date_from,
+            $collection->date_to,
+            $limit
         );
     }
 

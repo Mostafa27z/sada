@@ -51,6 +51,8 @@ class TrendController extends Controller
         $limit = intval($validated['limit'] ?? 50);
         $rawPlatforms = $validated['platforms'] ?? ['facebook', 'instagram', 'tiktok', 'twitter'];
         $country = $validated['country'] ?? 'SA';
+        $dateFrom = $validated['date_from'] ?? null;
+        $dateTo = $validated['date_to'] ?? null;
 
         // Normalize platform names ('x' => 'twitter')
         $platforms = array_values(array_unique(array_map(function ($p) {
@@ -65,12 +67,22 @@ class TrendController extends Controller
             'limit' => $limit,
             'platforms' => $platforms,
             'country' => $country,
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
         ]);
 
         if ($request->boolean('sync')) {
             try {
                 $trend->update(['status' => Trend::STATUS_PROCESSING]);
-                $result = $trendService->runPipeline($topic, $limit, $platforms, $country);
+                $result = $trendService->runPipeline(
+                    topic: $topic,
+                    limit: $limit,
+                    platforms: $platforms,
+                    country: $country,
+                    brandName: null,
+                    dateFrom: $dateFrom,
+                    dateTo: $dateTo
+                );
 
                 $trend->update([
                     'status' => Trend::STATUS_COMPLETED,
@@ -99,7 +111,9 @@ class TrendController extends Controller
             topic: $topic,
             limit: $limit,
             platforms: $platforms,
-            country: $country
+            country: $country,
+            dateFrom: $dateFrom,
+            dateTo: $dateTo
         );
 
         return $this->success(

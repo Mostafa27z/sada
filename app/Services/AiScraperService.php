@@ -25,7 +25,7 @@ class AiScraperService
     /**
      * Scrape posts and generate sentiment analytics by keywords across platforms natively.
      */
-    public function scrapeByKeywords(array $keywords, array $platforms = ['instagram', 'facebook', 'x', 'tiktok'], ?string $country = null): array
+    public function scrapeByKeywords(array $keywords, array $platforms = ['instagram', 'facebook', 'x', 'tiktok'], ?string $country = null, ?string $dateFrom = null, ?string $dateTo = null, int $limit = 50): array
     {
         if (empty($keywords)) {
             return [
@@ -35,6 +35,9 @@ class AiScraperService
         }
 
         $countryCode = $country ?: 'SA';
+        $platformCount = max(1, count($platforms));
+        // Allocate generous per-platform limit to reach the user target
+        $perPlatformLimit = max(15, intval(ceil($limit / $platformCount)));
 
         // 1. Try ApifyScraperService + GeminiAnalyticsService if available
         if ($this->apifyService && $this->geminiService) {
@@ -45,21 +48,49 @@ class AiScraperService
 
             try {
                 if (in_array('instagram', $platforms)) {
-                    $instaPosts = $this->apifyService->fetchInstagramByKeywords($keywords, 10, $country);
+                    $instaPosts = $this->apifyService->fetchInstagramByKeywords($keywords, $perPlatformLimit, $country);
                 }
                 if (in_array('facebook', $platforms)) {
-                    $fbPosts = $this->apifyService->fetchFacebookByKeywords($keywords, 10, $country);
+                    $fbPosts = $this->apifyService->fetchFacebookByKeywords($keywords, $perPlatformLimit, $country);
                 }
-                if (in_array('x', $platforms)) {
-                    $xPosts = $this->apifyService->fetchXByKeywords($keywords, 10, $country);
+                if (in_array('x', $platforms) || in_array('twitter', $platforms)) {
+                    $xPosts = $this->apifyService->fetchXByKeywords($keywords, $perPlatformLimit, $country, $dateFrom, $dateTo);
                 }
                 if (in_array('tiktok', $platforms)) {
-                    $tiktokPosts = $this->apifyService->fetchTiktokByKeywords($keywords, 10, $country);
+                    $tiktokPosts = $this->apifyService->fetchTiktokByKeywords($keywords, $perPlatformLimit, $country);
                 }
 
                 $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
 
                 if (!empty($allPosts)) {
+                    // Classify individual sentiments for each post via Gemini
+                    $sentimentMap = [];
+                    try {
+                        $sentimentMap = $this->geminiService->classifyPostsSentiment($allPosts);
+                    } catch (\Throwable $geminiErr) {
+                        Log::warning("Gemini classifyPostsSentiment error: " . $geminiErr->getMessage());
+                    }
+
+                    $enrichSentiment = function(&$postList) use ($sentimentMap) {
+                        foreach ($postList as &$post) {
+                            $key = $post['post_id'] ?? $post['external_id'] ?? null;
+                            if ($key && isset($sentimentMap[(string)$key])) {
+                                $post['sentiment'] = $sentimentMap[(string)$key]['sentiment'];
+                                $post['sentiment_score'] = $sentimentMap[(string)$key]['sentiment_score'];
+                            } else {
+                                $post['sentiment'] = $this->detectFallbackSentiment($post['text'] ?? '');
+                                $post['sentiment_score'] = 0.8;
+                            }
+                        }
+                        unset($post);
+                    };
+
+                    $enrichSentiment($instaPosts);
+                    $enrichSentiment($fbPosts);
+                    $enrichSentiment($xPosts);
+                    $enrichSentiment($tiktokPosts);
+                    $enrichSentiment($allPosts);
+
                     $analyticsJson = $this->geminiService->analyzeSentiment($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
 
                     return [
@@ -110,6 +141,46 @@ class AiScraperService
 
         // 3. Guaranteed Real News & Web Scraper via Google News RSS
         return $this->scrapeKeywordsViaGoogleNews($keywords, $platforms, $countryCode);
+    }
+
+    /**
+     * Smart heuristic Arabic sentiment detector fallback to avoid 100% false positive.
+     */
+    public function detectFallbackSentiment(string $text): string
+    {
+        $text = mb_strtolower(trim($text));
+        if (empty($text)) {
+            return 'neutral';
+        }
+
+        $negativePatterns = [
+            'شكوى', 'شكاوى', 'سيء', 'سيئة', 'اسوأ', 'أسوأ', 'عطل', 'معطل', 'خربان', 'نصب', 'احتيال',
+            'سرقة', 'سارق', 'ظلم', 'قهر', 'فاشل', 'فاشلة', 'فشل', 'غلاء', 'ارتفاع اسعار', 'لا يعمل',
+            'غش', 'رديء', 'مشاكل', 'مشكلة', 'فضيحة', 'تلاعب', 'خايس', 'زفت', 'حرامية', 'بؤس',
+            'انتبهوا', 'مقاطعة', 'تحذير', 'تعبان', 'كارثة', 'مأساة', 'تراجع', 'انخفاض', 'ضرر', 'مهزلة',
+            'خسارة', 'تأخير', 'مماطلة', 'رديئة', 'إهمال', 'سوء'
+        ];
+
+        $positivePatterns = [
+            'ممتاز', 'ممتازة', 'رائع', 'رائعة', 'شكرا', 'شكراً', 'جزاكم الله', 'افضل', 'أفضل',
+            'مبدع', 'ابداع', 'فخم', 'انجاز', 'إنجاز', 'نجاح', 'ناجح', 'نبارك', 'تهانينا', 'مبروك',
+            'يستاهل', 'انصح', 'أنصح', 'جميل', 'جميلة', 'محترم', 'راقي', 'راقية', 'كفو', 'تبارك الله',
+            'احترافي', 'تطور', 'تسهيل', 'فخر', 'عظيم', 'سعيد', 'سعيدة', 'أحسن', 'روعة', 'فرحة'
+        ];
+
+        foreach ($negativePatterns as $neg) {
+            if (mb_stripos($text, $neg) !== false) {
+                return 'negative';
+            }
+        }
+
+        foreach ($positivePatterns as $pos) {
+            if (mb_stripos($text, $pos) !== false) {
+                return 'positive';
+            }
+        }
+
+        return 'neutral';
     }
 
     /**

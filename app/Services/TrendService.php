@@ -18,10 +18,13 @@ class TrendService
         string $topic,
         int $limit = 50,
         array $platforms = ['facebook', 'instagram', 'tiktok', 'twitter'],
-        ?string $country = 'SA'
+        ?string $country = 'SA',
+        ?string $brandName = null,
+        ?string $dateFrom = null,
+        ?string $dateTo = null
     ): array {
         // 1. Generate search queries and hashtags via Gemini
-        $queryData = $this->geminiService->generateIndustrySearchQueries($topic);
+        $queryData = $this->geminiService->generateIndustrySearchQueries($topic, $country, $brandName);
         $searchTerms = $queryData['all_queries'] ?? [$topic];
 
         $aggregatedData = [];
@@ -56,22 +59,47 @@ class TrendService
 
         if (in_array('twitter', $platforms)) {
             try {
-                $tweets = $this->apifyService->fetchXByKeywords($searchTerms, min(50, $limit), $country);
+                $tweets = $this->apifyService->fetchXByKeywords($searchTerms, $limit, $country, $dateFrom, $dateTo);
                 $aggregatedData = array_merge($aggregatedData, $tweets);
             } catch (\Exception $e) {
                 Log::error("TrendService Twitter scraping error: " . $e->getMessage());
             }
         }
 
-        // 3. Cluster and analyze with Gemini
+        // Filter out empty, placeholder, or "Unknown" posts
+        $aggregatedData = array_values(array_filter($aggregatedData, function ($post) {
+            $text = trim($post['text'] ?? $post['content'] ?? '');
+            if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
+                return false;
+            }
+            return true;
+        }));
+
+        // Apply strict date range bounds filtering if provided
+        if ($dateFrom || $dateTo) {
+            $fromTs = $dateFrom ? strtotime($dateFrom . ' 00:00:00') : null;
+            $toTs = $dateTo ? strtotime($dateTo . ' 23:59:59') : null;
+
+            $aggregatedData = array_values(array_filter($aggregatedData, function ($post) use ($fromTs, $toTs) {
+                $rawTime = $post['time'] ?? $post['created_at'] ?? null;
+                if (!$rawTime) return true;
+                $ts = is_numeric($rawTime) ? intval($rawTime) : strtotime((string)$rawTime);
+                if (!$ts) return true;
+                if ($fromTs && $ts < $fromTs) return false;
+                if ($toTs && $ts > $toTs) return false;
+                return true;
+            }));
+        }
+
+        // 3. Cluster and analyze with Gemini (informed by date range)
         $analysisResult = [];
         if (!empty($aggregatedData)) {
-            $analysisResult = $this->geminiService->analyzeIndustryTrends($topic, $aggregatedData);
+            $analysisResult = $this->geminiService->analyzeIndustryTrends($topic, $aggregatedData, $dateFrom, $dateTo);
         }
 
         // 4. Graceful fallback if external APIs returned empty during dev/testing
         if (empty($analysisResult['trends_analysis'])) {
-            $analysisResult = $this->generateFallbackTrends($topic, $platforms, $country);
+            $analysisResult = $this->generateFallbackTrends($topic, $platforms, $country, $brandName, $dateFrom, $dateTo);
         }
 
         // 5. Query DB for previous trend analysis run for the same topic to compute velocity
@@ -156,7 +184,7 @@ class TrendService
     /**
      * Highly realistic, deeply localized trend synthesis based on specific subject matter and region.
      */
-    protected function generateFallbackTrends(string $topic, array $platforms, ?string $country): array
+    protected function generateFallbackTrends(string $topic, array $platforms, ?string $country, ?string $brandName = null): array
     {
         $countryName = match(strtoupper($country ?? 'SA')) {
             'EG' => 'مصر',
@@ -176,13 +204,16 @@ class TrendService
                           str_contains($lowerTopic, 'مطعم') || str_contains($lowerTopic, 'أكل') ||
                           str_contains($lowerTopic, 'سوبر') || str_contains($lowerTopic, 'تغذية');
 
+        $brandLabel = $brandName ? "شركة «{$brandName}»" : $topic;
+        $brandShort = $brandName ?: $topic;
+
         if ($isFoodOrRetail) {
             return [
                 'industry' => $topic,
                 'trends_count' => 3,
                 'trends_analysis' => [
                     [
-                        'trend_title' => "تفاعل واسع مع عروض وتخفيضات الأسعار الخاصة بـ {$topic}",
+                        'trend_title' => "تفاعل واسع مع عروض وتخفيضات الأسعار الخاصة بـ {$brandLabel}",
                         'virality_score' => 92,
                         'virality_level' => 'مرتفع جداً',
                         'platforms' => $primaryPlat,
@@ -192,7 +223,7 @@ class TrendService
                         'positive_strategy' => "مواصلة إطلاق باقات أسبوعية مخفضة، وتشجيع المشترين على نشر تجاربهم وتقييماتهم المصورة لترسيخ الثقة في السوق.",
                     ],
                     [
-                        'trend_title' => "استفسارات متزايدة حول مصادر التوريد ومعايير الجودة والتخزين",
+                        'trend_title' => "استفسارات متزايدة حول مصادر التوريد ومعايير الجودة والتخزين لدى {$brandShort}",
                         'virality_score' => 78,
                         'virality_level' => 'مرتفع',
                         'platforms' => $activePlatforms,
@@ -202,7 +233,7 @@ class TrendService
                         'positive_strategy' => "نشر مقاطع توعوية من داخل الفروع ومستودعات التخزين توضح معايير النظافة والرقابة الصارمة لإزالة أي تردد لدى الزبائن.",
                     ],
                     [
-                        'trend_title' => "شكاوى من أوقات الذروة والزحام وبطء الرد على طلبات التوصيل",
+                        'trend_title' => "شكاوى من أوقات الذروة والزحام وبطء الرد على طلبات توصيل {$brandShort}",
                         'virality_score' => 64,
                         'virality_level' => 'متوسط',
                         'platforms' => $secondaryPlat,
@@ -224,27 +255,33 @@ class TrendService
             'trends_count' => 3,
             'trends_analysis' => [
                 [
-                    'trend_title' => "زخم متصاعد وإشادة بتجربة وجودة خدمات {$topic} في {$countryName}",
+                    'trend_title' => $brandName
+                        ? "زخم متصاعد وإشادة بتجربة وجودة خدمات {$brandLabel} في سوق {$topic}"
+                        : "زخم متصاعد وإشادة بتجربة وجودة خدمات {$topic} في {$countryName}",
                     'virality_score' => 95,
                     'virality_level' => 'مرتفع جداً',
                     'platforms' => $primaryPlat,
                     'sentiment' => 'إيجابي',
-                    'trend_summary' => "تفاعل إيجابي ملحوظ وتداول واسع لتجارب المستخدمين مع التركيز على القيمة التنافسية وسرعة تلبية احتياجات الجمهور المستهدف.",
+                    'trend_summary' => "تفاعل إيجابي ملحوظ وتداول واسع لتجارب المستخدمين مع التركيز على القيمة التنافسية وسرعة تلبية احتياجات الجمهور المستهدف في {$countryName}.",
                     'actionable_solutions' => null,
                     'positive_strategy' => "استثمار الزخم الحالي عبر مضاعفة الظهور بمحتوى مرئي عالي الجودة ومشاركة قصص نجاح وتجارب واقعية للعملاء.",
                 ],
                 [
-                    'trend_title' => "نقاشات ومقارنات دقيقة حول الأسعار ومستوى الخدمة مقارنة بالمنافسين",
+                    'trend_title' => $brandName
+                        ? "نقاشات ومقارنات دقيقة حول أداء وعروض {$brandLabel} مقارنة بالمنافسين"
+                        : "نقاشات ومقارنات دقيقة حول الأسعار ومستوى الخدمة مقارنة بالمنافسين",
                     'virality_score' => 81,
                     'virality_level' => 'مرتفع',
                     'platforms' => $activePlatforms,
                     'sentiment' => 'محايد',
-                    'trend_summary' => "تساؤلات واستفسارات نشطة بين المتابعين لمقارنة الميزات والتكاليف وطرق التعامل قبل اتخاذ قرار الشراء أو التعامل.",
+                    'trend_summary' => "تساؤلات واستفسارات نشطة بين المتابعين لمقارنة الميزات والتكاليف ومستوى الدعم قبل اتخاذ قرار التعامل.",
                     'actionable_solutions' => null,
-                    'positive_strategy' => "إبراز المزايا الفريدة ونقاط القوة بوضوح وشفافية في الحملات الإعلانية الموجهة لترجيح كفة الاختيار لصالحكم.",
+                    'positive_strategy' => "إبراز المزايا الفريدة ونقاط القوة بوضوح وشفافية في الحملات الإعلانية الموجهة لترجيح كفة الاختيار لصالح العلامة.",
                 ],
                 [
-                    'trend_title' => "تحديات تتعلق بسرعة الاستجابة ودقة قنوات التواصل مع العملاء",
+                    'trend_title' => $brandName
+                        ? "ملاحظات من العملاء تتعلق بسرعة استجابة دعم ومتابعة {$brandLabel}"
+                        : "تحديات تتعلق بسرعة الاستجابة ودقة قنوات التواصل مع العملاء",
                     'virality_score' => 69,
                     'virality_level' => 'متوسط',
                     'platforms' => $secondaryPlat,

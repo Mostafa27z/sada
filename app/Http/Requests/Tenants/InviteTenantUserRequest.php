@@ -18,6 +18,7 @@ class InviteTenantUserRequest extends FormRequest
             'name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:50'],
             'role' => ['sometimes', 'nullable', 'string'],
+            'avatar' => ['sometimes', 'nullable'],
             'status' => ['sometimes', 'nullable', 'string', 'in:active,inactive,suspended,invited'],
         ];
     }

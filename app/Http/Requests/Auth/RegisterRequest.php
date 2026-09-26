@@ -27,6 +27,8 @@ class RegisterRequest extends FormRequest
             'email' => $this->input('email') ?? $this->input('workEmail'),
             'password_confirmation' => $this->input('password_confirmation') ?? $this->input('confirmPassword'),
             'agree_to_terms' => $this->input('agree_to_terms') ?? $this->input('agreeToTerms'),
+            'logo' => $this->file('logo') ?? $this->input('logo'),
+            'avatar' => $this->file('avatar') ?? $this->input('avatar'),
         ]);
     }
 
@@ -45,10 +47,12 @@ class RegisterRequest extends FormRequest
             'country' => ['required', 'string', 'max:100'],
             'industry' => ['required', 'string', 'max:100'],
             'website' => ['nullable', 'string', 'max:255'],
+            'logo' => ['required'],
 
             // Admin User Info
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
+            'avatar' => ['nullable'],
             'password' => [
                 'required',
                 'string',
@@ -71,8 +75,10 @@ class RegisterRequest extends FormRequest
             'country' => 'اسم الدولة',
             'industry' => 'مجال الشركة',
             'website' => 'الموقع الإلكتروني',
+            'logo' => 'شعار الشركة',
             'name' => 'الاسم الكامل',
             'email' => 'البريد الإلكتروني للعمل',
+            'avatar' => 'صورة الحساب الشخصي',
             'password' => 'كلمة المرور',
             'password_confirmation' => 'تأكيد كلمة المرور',
             'agree_to_terms' => 'الموافقة على الشروط والأحكام',

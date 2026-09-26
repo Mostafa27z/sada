@@ -284,6 +284,15 @@ class ScrapePostCommentsJob implements ShouldQueue
                 'status' => Collection::STATUS_COMPLETED,
                 'error_message' => null,
             ]);
+
+            try {
+                $collection = Collection::find($this->collectionId);
+                if ($collection) {
+                    app(\App\Services\ReportGeneratorService::class)->generateCampaignReport($collection);
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Failed to auto-generate campaign PDF report: " . $e->getMessage());
+            }
         }
 
         TenantContext::forgetTenant();

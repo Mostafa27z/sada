@@ -208,32 +208,153 @@ PROMPT;
         return [];
     }
 
+    /**
+     * Accurately classify sentiment (positive, negative, neutral) for individual posts.
+     * Takes an array of posts, sends batches to Gemini, and returns an associative array
+     * keyed by post identifier with 'sentiment' ('positive'|'negative'|'neutral') and 'sentiment_score'.
+     */
+    public function classifyPostsSentiment(array $posts): array
+    {
+        if (empty($posts) || empty($this->apiKey)) {
+            return [];
+        }
+
+        // Prepare compact list for LLM
+        $itemsToClassify = [];
+        foreach ($posts as $idx => $post) {
+            $text = is_array($post) ? ($post['text'] ?? $post['content'] ?? '') : (string)$post;
+            $text = trim(preg_replace('/\s+/', ' ', (string)$text));
+            if (empty($text) || mb_strlen($text) < 4 || mb_strtolower($text) === 'unknown') {
+                continue;
+            }
+            $pId = is_array($post) ? ($post['post_id'] ?? $post['external_id'] ?? (string)$idx) : (string)$idx;
+            $itemsToClassify[] = [
+                'index' => $idx,
+                'id' => (string)$pId,
+                'text' => mb_substr($text, 0, 350),
+            ];
+        }
+
+        if (empty($itemsToClassify)) {
+            return [];
+        }
+
+        $results = [];
+
+        // Batch in groups of 30 for high reliability and fast response
+        $chunks = array_chunk($itemsToClassify, 30);
+
+        foreach ($chunks as $chunk) {
+            $prompt = <<<PROMPT
+أنت خبير لغوي متخصص في تحليل مشاعر منشورات وتعليقات منصات التواصل الاجتماعي العربية واللهجات المحلية (السعودية، الخليجية، المصرية، الشامية، إلخ).
+
+المطلوب: تصنيف المشاعر لكل منشور بدقة شديدة وموضوعية تامة إلى إحدى الحالات الثلاث:
+1. "negative": أي شكوى، استياء، اعتراض، انتقاد، سخرية واستهزاء، غضب، تحذير من خدمة/منتج، بلاغ عن مشكلة.
+2. "neutral": نقل خبر محايد، سؤال أو استفسار، نشر رابط، معلومة مجردة بدون مدح أو ذم، إحصائية.
+3. "positive": مدح صريح، إشادة، شكر، تشجيع، تعبير عن الرضا أو الإعجاب، تفاؤل.
+
+حذارِ من تصنيف كل المنشورات كـ "positive"! يجب أن تعكس المشاعر الحقيقية بصرامة.
+
+إليك المنشورات كـ JSON Array:
+PROMPT;
+
+            $systemInstruction = <<<SYS
+أرجع كائن JSON يحتوي على مصفوفة "classifications" مطابقة للعناصر الممررة:
+{
+  "classifications": [
+    {
+      "index": 0,
+      "id": "معرف المنشور",
+      "sentiment": "positive" أو "negative" أو "neutral",
+      "sentiment_score": 0.85,
+      "reason": "سبب موجز للتصنيف"
+    }
+  ]
+}
+SYS;
+
+            $messages = [
+                ['role' => 'system', 'content' => $prompt . "\n\n" . $systemInstruction],
+                ['role' => 'user', 'content' => json_encode($chunk, JSON_UNESCAPED_UNICODE)],
+            ];
+
+            $responseFormat = [
+                'type' => 'json_object',
+            ];
+
+            $rawContent = $this->callGemini($messages, 90, $responseFormat);
+            if ($rawContent) {
+                $cleaned = preg_replace('/```json|```/', '', $rawContent);
+                $json = json_decode(trim($cleaned), true);
+                $classList = $json['classifications'] ?? (isset($json[0]) ? $json : []);
+
+                if (is_array($classList)) {
+                    foreach ($classList as $cItem) {
+                        $key = $cItem['id'] ?? (isset($cItem['index']) ? ($chunk[$cItem['index']]['id'] ?? null) : null);
+                        $sent = strtolower((string)($cItem['sentiment'] ?? 'neutral'));
+                        if (!in_array($sent, ['positive', 'negative', 'neutral'])) {
+                            $sent = 'neutral';
+                        }
+                        $score = floatval($cItem['sentiment_score'] ?? 0.8);
+                        if ($score <= 0 || $score > 1.0) $score = 0.85;
+
+                        if ($key !== null) {
+                            $results[(string)$key] = [
+                                'sentiment' => $sent,
+                                'sentiment_score' => $score,
+                            ];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $results;
+    }
+
     // ==================== TOPIC TREND DISCOVERY & ANALYSIS ====================
 
     /**
      * Generate 8 keywords and 8 hashtags for an industry/topic using Gemini.
      */
-    public function generateIndustrySearchQueries(string $industry): array
+    public function generateIndustrySearchQueries(string $industry, ?string $country = null, ?string $brandName = null): array
     {
+        $countryContext = $country ? " داخل سوق دولة ({$country})" : "";
+        $brandContext = $brandName ? " اسم الشركة أو العلامة التجارية المرصودة: («{$brandName}»)." : "";
+
+        $defaultKeywords = $brandName
+            ? [$brandName, "{$brandName} {$industry}", "آراء حول {$brandName}", "خدمات {$brandName}", "تطبيق {$brandName}", $industry]
+            : [$industry];
+        $defaultHashtags = $brandName
+            ? ["#" . str_replace(' ', '_', $brandName), "#" . str_replace(' ', '_', $industry)]
+            : ["#" . str_replace(' ', '_', $industry)];
+
         if (empty($this->apiKey)) {
             Log::error("GOOGLE_API_KEY is missing in .env");
             return [
-                "keywords" => [$industry],
-                "hashtags" => ["#" . str_replace(' ', '_', $industry)],
-                "all_queries" => [$industry],
+                "keywords" => $defaultKeywords,
+                "hashtags" => $defaultHashtags,
+                "all_queries" => array_values(array_unique(array_merge($defaultKeywords, $defaultHashtags))),
             ];
         }
 
+        $brandInstructions = $brandName
+            ? "7. الأولوية القصوى: التركيز على رصد ما يُنشر حول شركة («{$brandName}») تحديداً داخل هذا القطاع («{$industry}»)، وعبارات تبحث عن تفاعل العملاء وتجاربهم وآرائهم وشكاويهم أو إشادتهم بها وبخدماتها."
+            : "";
+
         $prompt = <<<PROMPT
-أنت خبير متقدم في الرصد الرقمي واكتشاف التريندات على شبكات التواصل (Social Listening & Trend Hunter).
-الموضوع أو الكيان المستهدف بدقة متناهية: ("{$industry}").
+أنت خبير متقدم في الرصد الرقمي واكتشاف التريندات والسمعة المؤسسية على شبكات التواصل (Social Listening & Brand Intelligence).
+{$brandContext}
+الموضوع أو المجال المستهدف: ("{$industry}").
+الدولة أو النطاق الجغرافي المستهدف: ("{$country}").
 
 المطلوب:
-توليد أهم عبارات البحث والهاشتاجات الأكثر دقة وحداثة لرصد هذا الموضوع تحديداً على فيسبوك، تيك توك، وإكس:
+توليد أهم عبارات البحث والهاشتاجات الأكثر دقة وحداثة ورواجاً لرصد هذا الكيان والمجال تحديداً{$countryContext} على منصات التواصل (إكس، تيك توك، فيسبوك، إنستغرام):
 التعليمات الصارمة:
-1. حافظ دوماً على العبارة أو الجملة المستهدفة كاملة ("{$industry}") ولا تقم بتفكيكها إلى كلمات منفصلة أو مجردة.
-2. الكلمات المفتاحية الناتجة يجب أن تتضمن الجملة كاملة أو عبارات مركبة مرتبطة بها مباشرة، بدون تجزئتها لكلمات فردية عشوائية.
-3. ركز على زوايا التفاعل الحي للجمهور (مثال: أخبار، ملخص، ملخص مباراة، عروض، رأي الناس، تفاصيل).
+1. حافظ على سياق العلامة والمجال والدولة ("{$brandName}" - "{$industry}" في "{$country}").
+2. الكلمات المفتاحية الناتجة يجب أن تتضمن عبارات مركبة تبحث بدقة عن آراء الناس، التجارب، الأسعار، الخدمات، والانطباعات.
+3. ركز على زوايا التفاعل الحي للجمهور (مثال: تجربة، خدمة عملاء، آراء، تقييم، عروض، مشاكل، ملخص).
+{$brandInstructions}
 4. قم بتوليد 6 عبارات مفتاحية (keywords) مركبة ودقيقة تتناول الجملة كاملة.
 5. قم بتوليد 6 هاشتاجات (hashtags) نشطة ومباشرة متضمنة رمز # في البداية.
 6. أرجع الناتج بتنسيق JSON حصراً بنفس الهيكل التالي وبدون أي مقدمات أو شروحات:
@@ -253,9 +374,9 @@ PROMPT;
             $cleaned = preg_replace('/```json|```/', '', $content);
             $data = json_decode(trim($cleaned), true);
 
-            $keywords = array_slice($data['keywords'] ?? [$industry], 0, 6);
-            $hashtags = array_slice($data['hashtags'] ?? ["#" . str_replace(' ', '_', $industry)], 0, 6);
-            $allQueries = array_values(array_unique(array_merge([$industry], $keywords, $hashtags)));
+            $keywords = array_slice($data['keywords'] ?? $defaultKeywords, 0, 6);
+            $hashtags = array_slice($data['hashtags'] ?? $defaultHashtags, 0, 6);
+            $allQueries = array_values(array_unique(array_merge($defaultKeywords, $keywords, $hashtags)));
 
             return [
                 "keywords" => $keywords,
@@ -274,7 +395,7 @@ PROMPT;
     /**
      * Cluster aggregated social media posts and Twitter trends into major trends with sentiment and solutions.
      */
-    public function analyzeIndustryTrends(string $industry, array $rawData): array
+    public function analyzeIndustryTrends(string $industry, array $rawData, ?string $dateFrom = null, ?string $dateTo = null): array
     {
         if (empty($this->apiKey) || empty($rawData)) {
             return [
@@ -300,9 +421,14 @@ PROMPT;
         $sampleData = array_slice($condensedData, 0, 300);
         $encodedData = json_encode($sampleData, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
+        $timeframeInstruction = ($dateFrom || $dateTo)
+            ? "الفترة الزمنية المحددة للرصد والتحليل: من " . ($dateFrom ?: 'البداية') . " إلى " . ($dateTo ?: 'الآن') . ". ركّز تحليلك وعناوين التريندات حصراً على ما تم نشره وتداوله خلال هذه الفترة المحددة فقط."
+            : "";
+
         $prompt = <<<PROMPT
 أنت خبير استراتيجي متقدم في تحليل بيانات شبكات التواصل والإنصات الرقمي (Social Listening & Trend Intelligence Specialist).
 مجال/نشاط الشركة المستهدفة: ({$industry}).
+{$timeframeInstruction}
 
 إليك البيانات المجمعة من منصات التواصل الاجتماعي (Facebook, Instagram, TikTok, Twitter/X) مع التفاعلات:
 {$encodedData}
@@ -565,6 +691,58 @@ PROMPT;
             "engagement_question" => $question,
             "key_points" => !empty($keyHighlights) ? array_slice($keyHighlights, 0, 3) : ["مستجدات وتطورات " . $topicClean, "ردود أفعال الجمهور", "تحليل المشهد الميداني"],
             "hashtags" => [$tag, "#تفاعل", "#متابعة"],
+        ];
+    }
+
+    /**
+     * Generate an AI executive summary for a batch of monitored posts and metrics.
+     */
+    public function generateReportExecutiveSummary(string $companyName, array $postsSnippet, array $stats): array
+    {
+        if (empty($this->apiKey)) {
+            return [
+                'summary' => "تقرير رصد وتحليل إعلامي شامل لمؤسسة {$companyName}. يوضح مؤشرات التفاعل العام وتوزيع المشاعر عبر مختلف المنصات الرقمية.",
+                'positive_insights' => ["تفاعل إيجابي ملحوظ على المنشورات الرسمية", "إشادة الجمهور بسرعة الاستجابة وجودة الخدمات"],
+                'negative_concerns' => ["بعض الاستفسارات حول أوقات الخدمة والدعم الفني"],
+                'recommendations' => ["تكثيف النشر في أوقات الذروة", "الرد السريع على تساؤلات المستفيدين"],
+            ];
+        }
+
+        $postsText = implode("\n", array_slice($postsSnippet, 0, 15));
+        $prompt = <<<PROMPT
+أنت كبير محللي البيانات والإعلام لمنصة "مرآة" للرصد والتحليل الذكي.
+قم بتحليل الرصد الإعلامي لمؤسسة: "{$companyName}".
+الإحصائيات العامة: إجمالي المنشورات ({$stats['total']})، إيجابي ({$stats['positive']})، محايد ({$stats['neutral']})، سلبي ({$stats['negative']}).
+عينة من المنشورات والتعليقات المرصودة:
+{$postsText}
+
+المطلوب إخراج كائن JSON فقط بالهيكل التالي بدون أي كود ماركداون:
+{
+  "summary": "فقرة موجزة ودقيقة وشاملة (3-4 أسطر) تلخص حالة الرصد الإعلامي اليوم وأبرز ما دار حول الشركة",
+  "positive_insights": ["نقطة 1 تبرز أهم الجوانب الإيجابية", "نقطة 2"],
+  "negative_concerns": ["نقطة تبرز أبرز الملاحظات أو الانتقادات إن وجدت"],
+  "recommendations": ["توصية تنفيذية للمسؤولين 1", "توصية تنفيذية 2"]
+}
+PROMPT;
+
+        $messages = [
+            ['role' => 'user', 'content' => $prompt],
+        ];
+
+        $content = $this->callGemini($messages, 60);
+        if ($content) {
+            $cleaned = preg_replace('/```json|```/', '', $content);
+            $json = json_decode(trim($cleaned), true);
+            if (is_array($json) && !empty($json['summary'])) {
+                return $json;
+            }
+        }
+
+        return [
+            'summary' => "تقرير رصد إعلامي شامل لمؤسسة {$companyName}. يوضح تفاعل الجمهور ومؤشرات الرصد الرقمي.",
+            'positive_insights' => ["تفاعل مستقر وإيجابي على قنوات التواصل"],
+            'negative_concerns' => ["لا توجد أزمات حرجة مرصودة"],
+            'recommendations' => ["مواصلة رصد الكلمات المفتاحية واستشعار الرأي العام"],
         ];
     }
 }

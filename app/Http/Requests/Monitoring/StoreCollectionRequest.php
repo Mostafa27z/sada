@@ -20,10 +20,11 @@ class StoreCollectionRequest extends FormRequest
             'platform' => ['sometimes', 'nullable', 'string', 'max:255'],
             'platforms' => ['sometimes', 'nullable', 'array'],
             'country' => ['sometimes', 'nullable', 'string', 'max:10'],
-            'color' => ['sometimes', 'nullable', 'string', 'max:20'],
             'comments_limit' => ['sometimes', 'nullable'],
             'keyword' => ['sometimes', 'nullable', 'string'],
             'keywords' => ['sometimes', 'nullable', 'array'],
+            'date_from' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'date_to' => ['sometimes', 'nullable', 'string', 'max:20'],
         ];
     }
 }

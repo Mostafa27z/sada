@@ -35,7 +35,7 @@ class DatabaseSeeder extends Seeder
             ['slug' => 'sada-tech'],
             [
                 'ulid' => (string) Str::ulid(),
-                'name' => 'شركة صدى للتقنية',
+                'name' => 'شركة مرآة للتقنية',
                 'status' => Tenant::STATUS_ACTIVE,
                 'plan_id' => $proPlan?->id,
             ]

@@ -73,12 +73,12 @@ Authorization: Bearer <SANCTUM_BEARER_TOKEN>
     "avatar": null,
     "status": "active",
     "role": "super_admin",
-    "companyName": "إدارة منصة صدى",
+    "companyName": "إدارة منصة مرآة",
     "current_tenant_id": 1,
     "current_tenant": {
       "id": 1,
       "ulid": "01J85G8XXXX...",
-      "name": "إدارة منصة صدى",
+      "name": "إدارة منصة مرآة",
       "slug": "sada-system"
     }
   }

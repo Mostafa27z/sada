@@ -24,6 +24,8 @@ class Collection extends Model
         'link',
         'platform',
         'country',
+        'date_from',
+        'date_to',
         'keywords',
         'comments_limit',
         'color',

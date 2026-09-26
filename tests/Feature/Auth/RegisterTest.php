@@ -24,6 +24,8 @@ class RegisterTest extends TestCase
             'password' => 'Password123!@#',
             'password_confirmation' => 'Password123!@#',
             'agree_to_terms' => true,
+            'logo' => 'https://sada-ai.com/logo.png',
+            'avatar' => 'https://sada-ai.com/avatar.png',
         ], $overrides);
     }
 
@@ -53,6 +55,17 @@ class RegisterTest extends TestCase
         $this->assertDatabaseHas('tenants', [
             'name' => 'شركة صدى للذكاء الاصطناعي',
         ]);
+    }
+
+    public function test_registration_fails_without_logo(): void
+    {
+        $data = $this->validRegistrationData();
+        unset($data['logo']);
+
+        $response = $this->postJson('/api/v1/auth/register', $data);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['logo']);
     }
 
     public function test_registration_fails_with_duplicate_email(): void

@@ -24,7 +24,7 @@ class SuperAdminSeeder extends Seeder
             ['slug' => 'sada-system'],
             [
                 'ulid' => (string) Str::ulid(),
-                'name' => 'إدارة منصة صدى',
+                'name' => 'إدارة منصة مرآة',
                 'status' => 'active',
                 'plan_id' => 1,
             ]

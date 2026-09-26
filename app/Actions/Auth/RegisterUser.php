@@ -8,11 +8,48 @@ use App\Models\Tenant;
 use App\Models\User;
 use App\Support\TenantContext;
 use Illuminate\Auth\Events\Registered;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class RegisterUser
 {
+    /**
+     * Store uploaded file or base64 image and return public URL or path.
+     */
+    protected function storeImage(mixed $image, string $directory): ?string
+    {
+        if (!$image) {
+            return null;
+        }
+
+        if ($image instanceof UploadedFile) {
+            $path = $image->store($directory, 'public');
+            return Storage::disk('public')->url($path);
+        }
+
+        if (is_string($image)) {
+            if (preg_match('/^data:image\/(\w+);base64,/', $image, $type)) {
+                $data = substr($image, strpos($image, ',') + 1);
+                $ext = strtolower($type[1]);
+                if ($ext === 'svg+xml') {
+                    $ext = 'svg';
+                }
+                $decoded = base64_decode($data);
+                if ($decoded !== false) {
+                    $filename = $directory . '/' . Str::random(32) . '.' . $ext;
+                    Storage::disk('public')->put($filename, $decoded);
+                    return Storage::disk('public')->url($filename);
+                }
+            }
+
+            return $image;
+        }
+
+        return null;
+    }
+
     /**
      * Register a new user, create their tenant workspace, and generate a Sanctum token.
      *
@@ -22,11 +59,16 @@ class RegisterUser
     public function execute(array $data): array
     {
         return DB::transaction(function () use ($data) {
+            // Process logo and avatar
+            $logoUrl = $this->storeImage($data['logo'] ?? null, 'logos');
+            $avatarUrl = $this->storeImage($data['avatar'] ?? null, 'avatars');
+
             // 1. Create User
             $user = User::create([
                 'name' => $data['name'],
                 'email' => $data['email'],
                 'password' => $data['password'], // Hashed by the model cast
+                'avatar' => $avatarUrl,
                 'status' => User::STATUS_ACTIVE,
             ]);
 
@@ -35,10 +77,11 @@ class RegisterUser
 
             // 3. Create Tenant
             $companyName = $data['company_name'];
-            $tenant = TenantContext::withoutTenancy(function () use ($companyName, $defaultPlan, $data) {
+            $tenant = TenantContext::withoutTenancy(function () use ($companyName, $defaultPlan, $data, $logoUrl) {
                 return Tenant::create([
                     'name' => $companyName,
                     'slug' => Str::slug($companyName) . '-' . Str::random(5),
+                    'logo' => $logoUrl,
                     'status' => Tenant::STATUS_TRIAL,
                     'plan_id' => $defaultPlan?->id,
                     'settings' => [
@@ -67,7 +110,20 @@ class RegisterUser
                 \Illuminate\Support\Facades\Log::warning('Failed to send registration email: ' . $e->getMessage());
             }
 
-            // 6. Generate access token
+            // 6. Trigger Automated Intelligence Pipeline for Country & Sector
+            try {
+                \App\Jobs\InitializeTenantIntelligenceJob::dispatch(
+                    tenantId: $tenant->id,
+                    companyName: $companyName,
+                    country: $data['country'] ?? 'المملكة العربية السعودية',
+                    industry: $data['industry'] ?? 'الرياضة والنوادي واللياقة البدنية',
+                    userId: $user->id
+                );
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed to dispatch InitializeTenantIntelligenceJob: ' . $e->getMessage());
+            }
+
+            // 7. Generate access token
             $token = $user->createToken(
                 config('sada.token.name', 'api-token')
             )->plainTextToken;

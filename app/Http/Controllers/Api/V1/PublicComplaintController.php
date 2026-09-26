@@ -81,4 +81,24 @@ class PublicComplaintController extends Controller
 
         return $this->created($complaint, 'Complaint submitted successfully');
     }
+
+    /**
+     * Get public tenant details (name, logo, theme colors) for public forms.
+     */
+    public function getTenantInfo(Request $request): JsonResponse
+    {
+        $tenantId = $request->query('tenant_id', 1);
+        $tenant = \App\Models\Tenant::find($tenantId);
+
+        if (!$tenant) {
+            return $this->notFound('الجهة غير موجودة');
+        }
+
+        return $this->success([
+            'id' => $tenant->id,
+            'name' => $tenant->name,
+            'logo' => $tenant->logo,
+            'theme' => $tenant->settings['theme'] ?? null,
+        ], 'Tenant info retrieved successfully');
+    }
 }

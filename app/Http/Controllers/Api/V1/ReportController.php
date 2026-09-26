@@ -15,7 +15,17 @@ class ReportController extends Controller
 
     public function index()
     {
-        $reports = Report::latest()->paginate(request('per_page', 20));
+        $query = Report::latest();
+
+        if (request()->filled('search')) {
+            $s = trim((string) request('search'));
+            $query->where(function ($q) use ($s) {
+                $q->where('name', 'like', "%{$s}%")
+                  ->orWhere('type', 'like', "%{$s}%");
+            });
+        }
+
+        $reports = $query->paginate(request('per_page', 20));
 
         return $this->paginated($reports, ReportResource::class);
     }
@@ -52,11 +62,37 @@ class ReportController extends Controller
             return $this->error(__('messages.not_found'), 404);
         }
 
-        if (!$report->file_path || !file_exists(storage_path('app/' . $report->file_path))) {
+        $publicDisk = \Illuminate\Support\Facades\Storage::disk('public');
+        if (!$report->file_path || !$publicDisk->exists($report->file_path)) {
             $generator->generate($report);
             $report = $report->fresh();
         }
 
-        return response()->download(storage_path('app/' . $report->file_path));
+        $fullPath = $publicDisk->path($report->file_path);
+        $downloadName = \Illuminate\Support\Str::slug($report->name) . '.html';
+
+        return response()->download($fullPath, $downloadName, [
+            'Content-Type' => 'text/html; charset=UTF-8',
+        ]);
+    }
+
+    public function destroy(int $id)
+    {
+        $report = Report::find($id);
+
+        if (!$report) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        if ($report->file_path) {
+            $publicDisk = \Illuminate\Support\Facades\Storage::disk('public');
+            if ($publicDisk->exists($report->file_path)) {
+                $publicDisk->delete($report->file_path);
+            }
+        }
+
+        $report->delete();
+
+        return $this->success(null, __('messages.deleted'));
     }
 }

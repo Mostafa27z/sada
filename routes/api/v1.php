@@ -70,6 +70,7 @@ Route::post('/tenant-requests', [TenantRequestController::class, 'store']);
 
 // Public QR Code Generator & Customer Complaint Submissions
 Route::get('/public/qr-code', [PublicComplaintController::class, 'generateQrCode']);
+Route::get('/public/tenant-info', [PublicComplaintController::class, 'getTenantInfo']);
 Route::post('/public/complaints', [PublicComplaintController::class, 'store']);
 
 /*
@@ -203,6 +204,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('/reports', [ReportController::class, 'store']);
         Route::get('/reports/{id}', [ReportController::class, 'show']);
         Route::get('/reports/{id}/download', [ReportController::class, 'download']);
+        Route::delete('/reports/{id}', [ReportController::class, 'destroy']);
 
         // API Credentials Module
         Route::get('/api-keys', [ApiKeyController::class, 'index']);

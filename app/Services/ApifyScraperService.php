@@ -88,15 +88,17 @@ class ApifyScraperService
 
     // ==================== KEYWORD SCRAPERS ====================
 
-    public function fetchXByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
+    public function fetchXByKeywords(array $keywords, int $maxItems = 10, ?string $country = null, ?string $dateFrom = null, ?string $dateTo = null): array
     {
-        $sinceDate = date('Y-m-d', strtotime('-2 days'));
-        $queryKeywords = array_map(function($kw) use ($country, $sinceDate) {
+        $sinceClause = $dateFrom ? "since:{$dateFrom}" : "since:" . date('Y-m-d', strtotime('-2 days'));
+        $untilClause = $dateTo ? " until:{$dateTo}" : "";
+
+        $queryKeywords = array_map(function($kw) use ($country, $sinceClause, $untilClause) {
             $kw = trim($kw);
             if (str_contains($kw, ' ') && !str_starts_with($kw, '"') && !str_starts_with($kw, '#')) {
                 $kw = "\"{$kw}\"";
             }
-            return "{$kw} since:{$sinceDate}";
+            return "{$kw} {$sinceClause}{$untilClause}";
         }, $keywords);
 
         $input = [
@@ -109,19 +111,32 @@ class ApifyScraperService
 
         $items = $this->runActorAndFetchItems("8CiMefkv2yLlD7vYl", $input);
         $results = [];
-        $cutoffTime = time() - (48 * 3600); // Strict 48h recency cutoff (today and yesterday only)
+
+        $fromTs = $dateFrom ? strtotime($dateFrom . ' 00:00:00') : (time() - (48 * 3600));
+        $toTs = $dateTo ? strtotime($dateTo . ' 23:59:59') : null;
 
         foreach ($items as $item) {
             $postId = (string)($item['id'] ?? $item['tweet_id'] ?? md5(json_encode($item)));
-            $author = $item['author_name'] ?? $item['username'] ?? 'Unknown User';
-            $text = $item['text'] ?? '';
+            $author = $item['author_name'] ?? $item['username'] ?? '';
+            if (empty(trim($author)) || strtolower($author) === 'unknown' || strtolower($author) === 'unknown user') {
+                $author = !empty($username) && $username !== 'x' ? "@{$username}" : 'مغرد في X';
+            }
+            $text = trim($item['text'] ?? '');
+            if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
+                continue; // Skip tweets without meaningful content
+            }
             $rawCreatedAt = $item['created_at'] ?? $item['date'] ?? '';
             $username = $item['author_username'] ?? $item['username'] ?? 'x';
             $url = $item['url'] ?? $item['tweet_url'] ?? "https://x.com/{$username}/status/{$postId}";
 
             $tsVal = $this->parseSocialTimestamp($rawCreatedAt);
-            if ($tsVal && $tsVal < $cutoffTime) {
-                continue; // Skip tweets older than 48 hours
+            if ($tsVal) {
+                if ($fromTs && $tsVal < $fromTs) {
+                    continue; // Skip tweets before requested date range
+                }
+                if ($toTs && $tsVal > $toTs) {
+                    continue; // Skip tweets after requested date range
+                }
             }
 
             $createdAt = $tsVal ? date('Y-m-d H:i:s', $tsVal) : ($rawCreatedAt ?: date('Y-m-d H:i:s'));
@@ -148,6 +163,10 @@ class ApifyScraperService
                 "platform" => "x",
                 "country" => $country ?? "SA"
             ];
+
+            if (count($results) >= $maxItems) {
+                break;
+            }
         }
 
         return $results;
@@ -157,8 +176,8 @@ class ApifyScraperService
     {
         $input = [
             "keywords" => $keywords,
-            "getStories" => true,
-            "maxItems" => $maxItems,
+            "getStories" => false,
+            "maxItems" => max(20, $maxItems * 2),
             "customMapFunction" => "(object) => { return {...object} }",
         ];
 
@@ -167,8 +186,14 @@ class ApifyScraperService
 
         foreach ($items as $item) {
             $owner = $item['owner'] ?? [];
-            $username = $owner['username'] ?? 'Unknown';
-            $text = $item['caption'] ?? '';
+            $username = $owner['username'] ?? $owner['full_name'] ?? '';
+            if (empty(trim($username)) || strtolower($username) === 'unknown') {
+                $username = 'حساب إنستغرام';
+            }
+            $text = trim($item['caption'] ?? $item['text'] ?? '');
+            if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
+                continue; // Strictly skip posts without caption/text
+            }
             $createdAt = $item['createdAt'] ?? '';
             $shortCode = $item['shortCode'] ?? $item['id'] ?? md5(json_encode($item));
             $postId = (string)($item['id'] ?? $shortCode);
@@ -189,6 +214,10 @@ class ApifyScraperService
                 "platform" => "instagram",
                 "country" => $country ?? "SA"
             ];
+
+            if (count($results) >= $maxItems) {
+                break;
+            }
         }
 
         return $results;
@@ -197,7 +226,7 @@ class ApifyScraperService
     public function fetchTiktokByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
         $input = [
-            "maxItems" => max(15, $maxItems * 2),
+            "maxItems" => max(25, $maxItems * 2),
             "keywords" => $keywords,
             "dateRange" => "THIS_MONTH",
             "sortType" => "DATE_POSTED",
@@ -210,8 +239,14 @@ class ApifyScraperService
 
         foreach ($items as $item) {
             $channel = $item['channel'] ?? [];
-            $username = $channel['username'] ?? 'Unknown';
-            $text = $item['title'] ?? $item['text'] ?? '';
+            $username = $channel['username'] ?? $channel['nickname'] ?? '';
+            if (empty(trim($username)) || strtolower($username) === 'unknown') {
+                $username = 'صانع محتوى تيك توك';
+            }
+            $text = trim($item['title'] ?? $item['text'] ?? $item['desc'] ?? '');
+            if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
+                continue; // Strictly skip videos without text/title
+            }
             $createdAt = $item['uploadedAtFormatted'] ?? $item['createTime'] ?? '';
             $videoId = (string)($item['id'] ?? $item['videoId'] ?? md5(json_encode($item)));
             $url = $item['webVideoUrl'] ?? $item['url'] ?? "https://www.tiktok.com/@{$username}/video/{$videoId}";
@@ -284,8 +319,14 @@ class ApifyScraperService
 
             foreach ($items as $item) {
                 $authorData = $item['author'] ?? [];
-                $author = $authorData['name'] ?? 'Unknown';
-                $text = $item['postText'] ?? $item['text'] ?? '';
+                $author = $authorData['name'] ?? '';
+                if (empty(trim($author)) || strtolower($author) === 'unknown') {
+                    $author = 'مستخدم فيسبوك';
+                }
+                $text = trim($item['postText'] ?? $item['text'] ?? '');
+                if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
+                    continue; // Skip posts without text
+                }
                 $postId = (string)($item['postId'] ?? $item['id'] ?? md5($text));
                 $url = $item['url'] ?? $item['postUrl'] ?? "https://www.facebook.com/{$postId}";
                 $rawTs = $item['timestamp'] ?? $item['time'] ?? $item['date'] ?? null;

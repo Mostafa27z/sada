@@ -78,12 +78,12 @@ class TenantController extends Controller
             return $this->error(__('messages.not_found'), 404);
         }
 
-        TenantContext::withoutTenancy(function () use ($tenant, $request) {
-            $tenant->update($request->validated());
+        $updatedTenant = TenantContext::withoutTenancy(function () use ($tenant, $request) {
+            return $this->tenantService->updateTenant($tenant, $request->validated());
         });
 
         return $this->success(
-            new TenantResource($tenant->fresh()),
+            new TenantResource($updatedTenant),
             __('messages.updated')
         );
     }

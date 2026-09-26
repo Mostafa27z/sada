@@ -54,7 +54,8 @@ class TenantUserController extends Controller
             $request->validated('email'),
             $request->validated('name'),
             $request->validated('phone'),
-            $request->validated('status')
+            $request->validated('status'),
+            $request->file('avatar') ?? $request->validated('avatar')
         );
 
         return $this->created(
@@ -87,7 +88,12 @@ class TenantUserController extends Controller
             'email' => ['sometimes', 'nullable', 'string', 'email', 'max:255'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:50'],
             'status' => ['sometimes', 'nullable', 'string', 'in:active,inactive,suspended,invited'],
+            'avatar' => ['sometimes', 'nullable'],
         ]);
+
+        if ($request->hasFile('avatar')) {
+            $data['avatar'] = $request->file('avatar');
+        }
 
         $updatedUser = $this->tenantService->updateUser($tenant, $userToUpdate, $data);
 

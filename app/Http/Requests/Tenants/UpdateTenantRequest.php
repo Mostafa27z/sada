@@ -25,7 +25,7 @@ class UpdateTenantRequest extends FormRequest
                 'max:255',
                 Rule::unique('tenants', 'slug')->ignore($tenantId),
             ],
-            'logo' => ['sometimes', 'nullable', 'string', 'max:500'],
+            'logo' => ['sometimes', 'nullable'],
             'settings' => ['sometimes', 'nullable', 'array'],
         ];
     }

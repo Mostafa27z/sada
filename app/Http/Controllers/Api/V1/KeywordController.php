@@ -143,6 +143,8 @@ class KeywordController extends Controller
             'keywords.*' => ['string'],
             'platforms' => ['sometimes', 'array'],
             'country' => ['sometimes', 'nullable', 'string'],
+            'date_from' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'date_to' => ['sometimes', 'nullable', 'string', 'max:20'],
         ]);
 
         $tenantId = \App\Support\TenantContext::getTenantId();
@@ -175,7 +177,10 @@ class KeywordController extends Controller
             $tenantId,
             $keywords,
             $request->get('platforms', ['instagram', 'facebook', 'x', 'tiktok']),
-            $request->get('country')
+            $request->get('country'),
+            null,
+            $request->get('date_from'),
+            $request->get('date_to')
         );
 
         return $this->success(null, 'Keyword scraping task queued successfully.', 202);

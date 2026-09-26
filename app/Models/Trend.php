@@ -25,6 +25,8 @@ class Trend extends Model
         'limit',
         'platforms',
         'country',
+        'date_from',
+        'date_to',
         'keywords',
         'hashtags',
         'raw_data_count',

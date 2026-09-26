@@ -27,7 +27,10 @@ class ScrapeKeywordsJob implements ShouldQueue
         public array $keywords,
         public array $platforms = ['instagram', 'facebook', 'x', 'tiktok'],
         public ?string $country = null,
-        public ?int $collectionId = null
+        public ?int $collectionId = null,
+        public ?string $dateFrom = null,
+        public ?string $dateTo = null,
+        public int $limit = 50
     ) {}
 
     public function handle(AiScraperService $aiService): void
@@ -39,7 +42,14 @@ class ScrapeKeywordsJob implements ShouldQueue
 
         TenantContext::setTenant($tenant);
 
-        $result = $aiService->scrapeByKeywords($this->keywords, $this->platforms, $this->country);
+        $result = $aiService->scrapeByKeywords(
+            $this->keywords,
+            $this->platforms,
+            $this->country,
+            $this->dateFrom,
+            $this->dateTo,
+            $this->limit
+        );
 
         if (($result['status'] ?? '') !== 'success') {
             Log::warning("ScrapeKeywordsJob failed for tenant {$this->tenantId}", ['result' => $result]);
@@ -56,6 +66,10 @@ class ScrapeKeywordsJob implements ShouldQueue
         $postsByPlatform = $result['posts_by_platform'] ?? [];
         $syncedArticleIds = [];
 
+        $fromTs = $this->dateFrom ? strtotime($this->dateFrom . ' 00:00:00') : null;
+        $toTs = $this->dateTo ? strtotime($this->dateTo . ' 23:59:59') : null;
+        $cutoffTime = time() - (30 * 86400);
+
         foreach ($postsByPlatform as $platformKey => $posts) {
             $platformName = match ($platformKey) {
                 'instagram_posts' => 'instagram',
@@ -67,21 +81,43 @@ class ScrapeKeywordsJob implements ShouldQueue
 
             foreach ($posts as $post) {
                 if (is_array($post)) {
+                    $content = trim($post['text'] ?? '');
+                    // Discard posts with empty, whitespace, or placeholder "Unknown" text
+                    if (empty($content) || mb_strlen($content) < 5 || strtolower($content) === 'unknown') {
+                        continue;
+                    }
+
                     $postId = $post['post_id'] ?? null;
                     $externalId = $post['external_id'] ?? ($postId ? "{$platformName}_{$postId}" : 'ext_' . md5(json_encode($post)));
-                    $author = mb_substr(!empty($post['author']) ? $post['author'] : ($platformName === 'web' ? 'مصدر إخباري' : 'مستخدم ' . ucfirst($platformName)), 0, 250);
-                    $content = $post['text'] ?? '';
-                    $rawTitle = !empty($post['title']) ? $post['title'] : '';
-                    $title = $rawTitle ?: mb_substr($content ?: $author, 0, 200);
+                    
+                    $rawAuthor = trim($post['author'] ?? '');
+                    if (empty($rawAuthor) || strtolower($rawAuthor) === 'unknown') {
+                        $author = $platformName === 'web' ? 'مصدر إخباري' : 'مستخدم ' . ucfirst($platformName);
+                    } else {
+                        $author = mb_substr($rawAuthor, 0, 250);
+                    }
+
+                    $rawTitle = trim($post['title'] ?? '');
+                    if (empty($rawTitle) || strtolower($rawTitle) === 'unknown') {
+                        $title = mb_substr($content, 0, 200);
+                    } else {
+                        $title = mb_substr($rawTitle, 0, 200);
+                    }
+
                     $url = !empty($post['url']) ? $post['url'] : ('https://' . ($platformName === 'web' ? 'news.google.com' : $platformName . '.com'));
                     $countryCode = mb_substr($post['country'] ?? $this->country ?? 'SA', 0, 10);
                     $rawCreatedAt = $post['created_at'] ?? null;
 
-                    $cutoffTime = time() - (30 * 86400); // 30-day freshness window for keyword monitoring
                     if (!empty($rawCreatedAt)) {
                         $parsedTime = strtotime($rawCreatedAt);
-                        if ($parsedTime && $parsedTime < $cutoffTime) {
-                            continue; // Skip posts older than 30 days
+                        if ($fromTs && $parsedTime && $parsedTime < $fromTs) {
+                            continue; // Skip posts published before date_from
+                        }
+                        if ($toTs && $parsedTime && $parsedTime > $toTs) {
+                            continue; // Skip posts published after date_to
+                        }
+                        if (!$fromTs && $parsedTime && $parsedTime < $cutoffTime) {
+                            continue;
                         }
                         $createdAt = $parsedTime ? date('Y-m-d H:i:s', $parsedTime) : now();
                     } else {
@@ -89,8 +125,12 @@ class ScrapeKeywordsJob implements ShouldQueue
                     }
                 } else {
                     $lines = explode("\n", trim((string)$post));
-                    $author = mb_substr(trim($lines[0] ?? 'مصدر إخباري'), 0, 250);
+                    $rawAuthor = trim($lines[0] ?? 'مصدر إخباري');
+                    $author = (empty($rawAuthor) || strtolower($rawAuthor) === 'unknown') ? 'مصدر إخباري' : mb_substr($rawAuthor, 0, 250);
                     $content = trim(implode("\n", array_slice($lines, 1)));
+                    if (empty($content) || mb_strlen($content) < 5 || strtolower($content) === 'unknown') {
+                        continue;
+                    }
                     $title = mb_substr($content ?: $author, 0, 200);
 
                     $postId = md5((string)$post);
@@ -99,7 +139,6 @@ class ScrapeKeywordsJob implements ShouldQueue
                     $countryCode = mb_substr($this->country ?? 'SA', 0, 10);
                     $createdAt = now();
                 }
-
 
                 $article = Article::withoutGlobalScopes()
                     ->withTrashed()
@@ -112,6 +151,10 @@ class ScrapeKeywordsJob implements ShouldQueue
                     $article->restore();
                 }
 
+                $postSentiment = is_array($post) ? ($post['sentiment'] ?? null) : null;
+                $sentiment = in_array($postSentiment, ['positive', 'negative', 'neutral']) ? $postSentiment : 'neutral';
+                $sentimentScore = (is_array($post) && isset($post['sentiment_score'])) ? floatval($post['sentiment_score']) : 0.75;
+
                 $article->fill([
                     'title' => $title ?: 'خبر / منشور صحفي',
                     'slug' => $article->slug ?: (Str::slug(mb_substr($title, 0, 40)) . '-' . Str::random(8)),
@@ -122,12 +165,12 @@ class ScrapeKeywordsJob implements ShouldQueue
                     'language' => 'ar',
                     'country' => $countryCode,
                     'published_at' => $createdAt,
-                    'sentiment' => $post['sentiment'] ?? 'positive',
-                    'sentiment_score' => $post['sentiment_score'] ?? 0.85,
+                    'sentiment' => $sentiment,
+                    'sentiment_score' => $sentimentScore,
                     'raw_data' => [
                         'platform' => $platformName,
-                        'reach' => $post['reach'] ?? null,
-                        'engagement' => $post['engagement'] ?? null,
+                        'reach' => (is_array($post) ? ($post['reach'] ?? null) : null),
+                        'engagement' => (is_array($post) ? ($post['engagement'] ?? null) : null),
                         'raw_post' => $post,
                         'analytics' => $result['analytics'] ?? [],
                     ],
@@ -164,6 +207,12 @@ class ScrapeKeywordsJob implements ShouldQueue
                     'status' => Collection::STATUS_COMPLETED,
                     'error_message' => null,
                 ]);
+
+                try {
+                    app(\App\Services\ReportGeneratorService::class)->generateCampaignReport($colRecord);
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning("Failed to auto-generate keyword campaign PDF report: " . $e->getMessage());
+                }
             }
         }
 

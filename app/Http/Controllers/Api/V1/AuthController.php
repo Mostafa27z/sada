@@ -16,6 +16,7 @@ use App\Http\Requests\Auth\VerifyOtpRequest;
 use App\Http\Resources\UserResource;
 use App\Models\AuthVerificationCode;
 use App\Models\User;
+use App\Services\TenantService;
 use App\Support\ApiResponse;
 use Illuminate\Auth\Events\Verified;
 use Illuminate\Http\JsonResponse;
@@ -345,10 +346,14 @@ class AuthController extends Controller
     /**
      * Update the authenticated user's profile.
      */
-    public function updateProfile(UpdateProfileRequest $request): JsonResponse
+    public function updateProfile(UpdateProfileRequest $request, TenantService $tenantService): JsonResponse
     {
         $user = $request->user();
         $data = $request->validated();
+
+        if (array_key_exists('avatar', $data) && $data['avatar']) {
+            $data['avatar'] = $tenantService->storeImage($data['avatar'], 'avatars');
+        }
 
         $emailChanged = isset($data['email']) && $data['email'] !== $user->email;
         $user->fill($data);

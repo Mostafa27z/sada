@@ -16,6 +16,8 @@ class TrendResource extends JsonResource
             'limit' => $this->limit,
             'platforms' => $this->platforms,
             'country' => $this->country ?? 'SA',
+            'date_from' => $this->date_from,
+            'date_to' => $this->date_to,
             'keywords' => $this->keywords,
             'hashtags' => $this->hashtags,
             'raw_data_count' => $this->raw_data_count,

@@ -26,7 +26,9 @@ class AnalyzeTrendsJob implements ShouldQueue
         public string $topic,
         public int $limit = 50,
         public array $platforms = ['facebook', 'instagram', 'tiktok', 'twitter'],
-        public ?string $country = 'SA'
+        public ?string $country = 'SA',
+        public ?string $dateFrom = null,
+        public ?string $dateTo = null
     ) {}
 
     public function handle(TrendService $trendService): void
@@ -55,7 +57,10 @@ class AnalyzeTrendsJob implements ShouldQueue
                 topic: $this->topic,
                 limit: $this->limit,
                 platforms: $this->platforms,
-                country: $this->country ?? 'SA'
+                country: $this->country ?? 'SA',
+                brandName: null,
+                dateFrom: $this->dateFrom,
+                dateTo: $this->dateTo
             );
 
             $trend->update([
