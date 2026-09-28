@@ -85,11 +85,13 @@ class RegisterUser
                     'status' => Tenant::STATUS_TRIAL,
                     'plan_id' => $defaultPlan?->id,
                     'settings' => [
-                        'company_email' => $data['company_email'] ?? null,
-                        'phone' => $data['phone'] ?? null,
-                        'country' => $data['country'] ?? null,
-                        'industry' => $data['industry'] ?? null,
-                        'website' => $data['website'] ?? null,
+                        'company_email'       => $data['company_email'] ?? null,
+                        'phone'               => $data['phone'] ?? null,
+                        'country'             => $data['country'] ?? null,
+                        'city'                => $data['city'] ?? null,
+                        'industry'            => $data['industry'] ?? null,
+                        'company_description' => $data['company_description'] ?? null,
+                        'website'             => $data['website'] ?? null,
                     ],
                 ]);
             });
@@ -113,11 +115,13 @@ class RegisterUser
             // 6. Trigger Automated Intelligence Pipeline for Country & Sector
             try {
                 \App\Jobs\InitializeTenantIntelligenceJob::dispatch(
-                    tenantId: $tenant->id,
-                    companyName: $companyName,
-                    country: $data['country'] ?? 'المملكة العربية السعودية',
-                    industry: $data['industry'] ?? 'الرياضة والنوادي واللياقة البدنية',
-                    userId: $user->id
+                    tenantId:           $tenant->id,
+                    companyName:        $companyName,
+                    country:            $data['country'] ?? 'المملكة العربية السعودية',
+                    city:               $data['city'] ?? null,
+                    industry:           $data['industry'] ?? '',
+                    companyDescription: $data['company_description'] ?? null,
+                    userId:             $user->id
                 );
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Failed to dispatch InitializeTenantIntelligenceJob: ' . $e->getMessage());

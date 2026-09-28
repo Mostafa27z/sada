@@ -8,6 +8,7 @@ use App\Models\Keyword;
 use App\Models\Source;
 use App\Models\Tenant;
 use App\Models\Trend;
+use App\Services\AiScraperService;
 use App\Services\TrendService;
 use App\Support\TenantContext;
 use Illuminate\Bus\Queueable;
@@ -29,7 +30,9 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
         public int $tenantId,
         public string $companyName,
         public string $country,
-        public string $industry,
+        public ?string $city = null,
+        public string $industry = '',
+        public ?string $companyDescription = null,
         public ?int $userId = null
     ) {}
 
@@ -54,7 +57,7 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
         };
     }
 
-    public function handle(TrendService $trendService): void
+    public function handle(TrendService $trendService, AiScraperService $scraper): void
     {
         Log::info("Initializing Automated Intelligence for Tenant #{$this->tenantId} ({$this->companyName}) in {$this->country} / {$this->industry}");
 
@@ -66,7 +69,7 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
         $countryCode = $this->resolveCountryCode($this->country);
         $platforms = ['x', 'facebook', 'instagram', 'tiktok'];
 
-        TenantContext::withoutTenancy(function () use ($tenant, $countryCode, $platforms, $trendService) {
+        TenantContext::withoutTenancy(function () use ($tenant, $countryCode, $platforms, $trendService, $scraper) {
             // 1. Run or fallback the Trend Discovery Pipeline with targeted Company & Industry
             $pipelineResult = [];
             try {
@@ -97,57 +100,208 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
                 'trends_analysis' => $pipelineResult['trends_analysis'] ?? [],
             ]);
 
-            // 3. Create Automated Company & Industry Campaign (Collection)
-            $campaignName = "رصد تلقائي: {$this->companyName} - قطاع {$this->industry}";
-            $campaignDescription = "رصد وتتبع علامة {$this->companyName} ونبض قطاع {$this->industry} في {$this->country}";
+            // 3. Create TWO Separate Campaigns (Collections): 1) Brand Specific, 2) General Sector
+            $cleanName = trim(preg_replace('/^(مدرسة|شركة|مؤسسة|سلسلة|مطعم|مستشفى|مركز)\s+/u', '', $this->companyName));
+            $shortName = $cleanName ?: $this->companyName;
 
-            $defaultKeywords = [$this->companyName, "{$this->companyName} {$this->industry}", "آراء حول {$this->companyName}", $this->industry];
-            $keywordsStr = implode(', ', $pipelineResult['keywords'] ?? $defaultKeywords);
+            // Brand Specific Keywords
+            $brandKeywords = array_filter([
+                $this->companyName,
+                $shortName,
+                $this->city ? "{$this->companyName} {$this->city}" : null,
+                $this->city ? "{$shortName} {$this->city}" : null,
+                "#" . str_replace(' ', '_', $this->companyName),
+                "#" . str_replace(' ', '_', $shortName),
+                $this->city ? "#" . str_replace(' ', '_', "{$shortName}_{$this->city}") : null,
+                "آراء حول {$this->companyName}",
+                "تجربة {$shortName}",
+            ]);
+            $brandKeywords = array_values(array_unique($brandKeywords));
 
-            $collection = Collection::create([
+            // Sector General Keywords
+            $sectorKeywords = $this->generateSectorKeywords($this->industry, $this->country);
+
+            // Campaign 1: Brand Collection (Priority #1)
+            $brandCampaignName = "رصد خاص: {$this->companyName}";
+            if ($this->city) {
+                $brandCampaignName .= " ({$this->city})";
+            }
+            $brandCollection = Collection::create([
                 'tenant_id' => $tenant->id,
                 'created_by' => $this->userId,
-                'name' => $campaignName,
-                'description' => $campaignDescription,
+                'name' => $brandCampaignName,
+                'description' => "رصد وتتبع علامة {$this->companyName} والوسوم والآراء المباشرة الموجهة لها في {$this->country}",
                 'link' => '#',
                 'platform' => 'all',
                 'country' => $countryCode,
-                'keywords' => $keywordsStr,
+                'keywords' => implode(', ', $brandKeywords),
                 'comments_limit' => 50,
                 'color' => '#10b981',
                 'status' => Collection::STATUS_ACTIVE,
             ]);
 
-            // 4. Create Seed Keyword records for Tenant targeting Company & Industry
-            $seedKeywords = array_slice($pipelineResult['keywords'] ?? $defaultKeywords, 0, 4);
-            foreach ($seedKeywords as $kw) {
+            // Campaign 2: Sector Collection (Priority #2)
+            $sectorCampaignName = "تريندات قطاع {$this->industry} في {$this->country}";
+            $sectorCollection = Collection::create([
+                'tenant_id' => $tenant->id,
+                'created_by' => $this->userId,
+                'name' => $sectorCampaignName,
+                'description' => "رصد ونبض القرارات والأخبار الشائعة والتريندات العامة لقطاع {$this->industry} في {$this->country}",
+                'link' => '#',
+                'platform' => 'all',
+                'country' => $countryCode,
+                'keywords' => implode(', ', $sectorKeywords),
+                'comments_limit' => 50,
+                'color' => '#6366f1',
+                'status' => Collection::STATUS_ACTIVE,
+            ]);
+
+            // 4. Create Seed Keyword records: High priority for Brand, Medium priority for Sector
+            foreach (array_slice($brandKeywords, 0, 6) as $kw) {
                 Keyword::firstOrCreate(
-                    [
-                        'tenant_id' => $tenant->id,
-                        'name' => $kw,
-                    ],
-                    [
-                        'status' => Keyword::STATUS_ACTIVE,
-                        'category' => $this->industry,
-                        'priority' => 'high',
-                        'created_by' => $this->userId,
-                    ]
+                    ['tenant_id' => $tenant->id, 'name' => $kw],
+                    ['status' => Keyword::STATUS_ACTIVE, 'category' => 'علامة تجارية', 'priority' => 'high', 'created_by' => $this->userId]
+                );
+            }
+            foreach (array_slice($sectorKeywords, 0, 5) as $kw) {
+                Keyword::firstOrCreate(
+                    ['tenant_id' => $tenant->id, 'name' => $kw],
+                    ['status' => Keyword::STATUS_ACTIVE, 'category' => $this->industry, 'priority' => 'medium', 'created_by' => $this->userId]
                 );
             }
 
-            // 5. Seed Real Initial Articles tailored to the Company, Country & Industry
-            $this->seedInitialArticles($tenant, $collection, $countryCode);
+            // 5. Scrape REAL posts and populate both collections
+            $this->scrapeAndSaveRealArticles($tenant, $brandCollection, $sectorCollection, $countryCode, $scraper);
         });
 
         Log::info("Automated Intelligence successfully seeded for Tenant #{$this->tenantId}");
     }
 
     /**
-     * Pre-populate real, sector-specific articles and negative signals
-     * so that Dashboard Overview metrics, signals, and charts are immediately active.
+     * Fetch REAL social media posts about the company via AiScraperService (Apify + Gemini).
+     * Falls back to static seed templates only if scraping returns nothing.
      */
-    protected function seedInitialArticles(Tenant $tenant, Collection $collection, string $countryCode): void
-    {
+    protected function scrapeAndSaveRealArticles(
+        Tenant $tenant,
+        Collection $brandCollection,
+        Collection $sectorCollection,
+        string $countryCode,
+        AiScraperService $scraper
+    ): void {
+        // ── Keywords ذكية: اسم الشركة + المدينة + القطاع + الوصف ──────────
+        $locationCtx = $this->city
+            ? "{$this->companyName} {$this->city}"
+            : $this->companyName;
+
+        $keywords = array_filter([
+            $locationCtx,
+            "{$this->companyName} {$this->industry}",
+            "آراء حول {$this->companyName}",
+            "تجربة {$this->companyName}",
+            "#" . str_replace(' ', '_', $this->companyName),
+            $this->city ? "{$this->city} {$this->industry}" : $this->industry,
+            "التعليم في {$this->country}",
+        ]);
+        $keywords = array_values(array_unique(array_filter($keywords)));
+
+        Log::info("Starting real scrape for tenant #{$tenant->id} with keywords: " . implode(', ', $keywords));
+
+        $result = [];
+        try {
+            $result = $scraper->scrapeByKeywords(
+                keywords: $keywords,
+                platforms: ['x', 'facebook', 'instagram', 'tiktok'],
+                country: $countryCode,
+                limit: 40,
+            );
+        } catch (\Throwable $e) {
+            Log::warning("Real scraping failed for tenant #{$tenant->id}: " . $e->getMessage());
+        }
+
+        // جمع كل البوستات الحقيقية من كل البلاتفورمز
+        $allPosts = [];
+        if (!empty($result['posts_by_platform'])) {
+            foreach ($result['posts_by_platform'] as $platform => $posts) {
+                foreach ($posts as $post) {
+                    $post['_platform'] = $platform;
+                    $allPosts[] = $post;
+                }
+            }
+        }
+
+        // لو ما فيش بيانات حقيقية → fallback للـ seed الوهمي
+        if (empty($allPosts)) {
+            Log::info("No real posts found for tenant #{$tenant->id}, falling back to static seed.");
+            $this->seedInitialArticles($tenant, $brandCollection, $sectorCollection, $countryCode);
+            return;
+        }
+
+        $defaultSource = Source::firstOrCreate(
+            ['name' => 'منصات التواصل الاجتماعي'],
+            [
+                'type'      => 'social',
+                'url'       => 'https://twitter.com',
+                'is_active' => true,
+                'country'   => $countryCode,
+            ]
+        );
+
+        $articleIds = [];
+
+        foreach (array_slice($allPosts, 0, 40) as $post) {
+            $platform  = $post['_platform'] ?? $post['platform'] ?? 'x';
+            $text      = $post['text'] ?? $post['content'] ?? $post['caption'] ?? '';
+            $postUrl   = $post['url'] ?? $post['post_url'] ?? $post['link'] ?? '#';
+            $author    = $post['author'] ?? $post['username'] ?? $post['author_name'] ?? 'مجهول';
+            $sentiment = $post['sentiment'] ?? 'neutral';
+            $score     = (float)($post['sentiment_score'] ?? 0.0);
+            $timestamp = $post['timestamp'] ?? $post['created_at'] ?? null;
+            $publishedAt = $timestamp ? now()->setTimestamp((int)$timestamp) : now()->subHours(rand(1, 48));
+
+            if (empty($text)) continue;
+
+            $article = Article::create([
+                'tenant_id'       => $tenant->id,
+                'source_id'       => $defaultSource->id,
+                'title'           => mb_substr($text, 0, 120),
+                'slug'            => Str::slug(mb_substr($text, 0, 60)) . '-' . Str::random(6),
+                'content'         => $text,
+                'summary'         => mb_substr($text, 0, 200),
+                'url'             => $postUrl,
+                'author'          => $author,
+                'language'        => 'ar',
+                'country'         => $countryCode,
+                'category'        => $this->industry,
+                'published_at'    => $publishedAt,
+                'sentiment'       => $sentiment,
+                'sentiment_score' => $score,
+                'raw_data'        => [
+                    'platform'   => $platform,
+                    'engagement' => $post['likes_count'] ?? $post['likes'] ?? $post['engagement'] ?? 0,
+                    'source'     => 'auto_intelligence',
+                ],
+            ]);
+
+            $articleIds[] = $article->id;
+        }
+
+        if (!empty($articleIds)) {
+            $brandCollection->articles()->attach($articleIds);
+            $sectorCollection->articles()->attach($articleIds);
+        }
+
+        Log::info("Saved " . count($articleIds) . " REAL articles for tenant #{$tenant->id}");
+    }
+
+    /**
+     * Pre-populate static, sector-specific articles (fallback only).
+     */
+    protected function seedInitialArticles(
+        Tenant $tenant,
+        Collection $brandCollection,
+        Collection $sectorCollection,
+        string $countryCode
+    ): void {
         // Get or create a generic social source
         $defaultSource = Source::firstOrCreate(
             ['name' => 'منصات التواصل الاجتماعي'],
@@ -187,9 +341,9 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
             $articleIds[] = $article->id;
         }
 
-        // Attach created articles to the automated campaign collection
         if (!empty($articleIds)) {
-            $collection->articles()->attach($articleIds);
+            $brandCollection->articles()->attach($articleIds);
+            $sectorCollection->articles()->attach($articleIds);
         }
     }
 
@@ -370,6 +524,61 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
                 'engagement' => 1950,
                 'hours_ago' => 11,
             ],
+        ];
+    }
+
+    /**
+     * Generate sector-wide macro keywords for general sector monitoring.
+     */
+    protected function generateSectorKeywords(string $industry, string $country): array
+    {
+        $ind = mb_strtolower($industry);
+
+        if (str_contains($ind, 'تعليم') || str_contains($ind, 'جامع') || str_contains($ind, 'مدرس')) {
+            return [
+                "التعليم في {$country}",
+                "قرارات وزير التعليم",
+                "أخبار المدارس والجامعات",
+                "تريندات التعليم في {$country}",
+                "تطوير التعليم والامتحانات",
+            ];
+        }
+
+        if (str_contains($ind, 'طب') || str_contains($ind, 'صح') || str_contains($ind, 'مستشف')) {
+            return [
+                "القطاع الصحي في {$country}",
+                "قرارات وزارة الصحة",
+                "تريندات الصحة والرعاية الطبية",
+                "أخبار المستشفيات في {$country}",
+                "الخدمات الطبية والعلاج",
+            ];
+        }
+
+        if (str_contains($ind, 'أغذي') || str_contains($ind, 'طعام') || str_contains($ind, 'دواجن') || str_contains($ind, 'مطاعم') || str_contains($ind, 'مجمدات')) {
+            return [
+                "قطاع الأغذية والمطاعم في {$country}",
+                "أسعار المنتجات الغذائية والدواجن",
+                "تريندات الأغذية والمشروبات",
+                "سلامة الغذاء والجودة",
+                "أخبار شركات الأغذية في {$country}",
+            ];
+        }
+
+        if (str_contains($ind, 'رياض') || str_contains($ind, 'أندي') || str_contains($ind, 'لياق')) {
+            return [
+                "الرياضة والأندية في {$country}",
+                "تريندات الرياضة والفعاليات",
+                "أخبار الأندية الرياضية في {$country}",
+                "أنشطة اللياقة البدنية",
+                "بطولات وفعاليات {$country}",
+            ];
+        }
+
+        return [
+            "قطاع {$industry} في {$country}",
+            "تريندات {$industry}",
+            "أخبار ومستجدات {$industry} في {$country}",
+            "سوق {$industry} في {$country}",
         ];
     }
 }

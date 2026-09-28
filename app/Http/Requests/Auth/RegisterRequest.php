@@ -21,14 +21,16 @@ class RegisterRequest extends FormRequest
     protected function prepareForValidation(): void
     {
         $this->merge([
-            'company_name' => $this->input('company_name') ?? $this->input('companyName'),
-            'company_email' => $this->input('company_email') ?? $this->input('companyEmail'),
-            'name' => $this->input('name') ?? $this->input('fullName'),
-            'email' => $this->input('email') ?? $this->input('workEmail'),
-            'password_confirmation' => $this->input('password_confirmation') ?? $this->input('confirmPassword'),
-            'agree_to_terms' => $this->input('agree_to_terms') ?? $this->input('agreeToTerms'),
-            'logo' => $this->file('logo') ?? $this->input('logo'),
-            'avatar' => $this->file('avatar') ?? $this->input('avatar'),
+            'company_name'        => $this->input('company_name') ?? $this->input('companyName'),
+            'company_email'       => $this->input('company_email') ?? $this->input('companyEmail'),
+            'name'                => $this->input('name') ?? $this->input('fullName'),
+            'email'               => $this->input('email') ?? $this->input('workEmail'),
+            'password_confirmation'=> $this->input('password_confirmation') ?? $this->input('confirmPassword'),
+            'agree_to_terms'      => $this->input('agree_to_terms') ?? $this->input('agreeToTerms'),
+            'logo'                => $this->file('logo') ?? $this->input('logo'),
+            'avatar'              => $this->file('avatar') ?? $this->input('avatar'),
+            'city'                => $this->input('city') ?? null,
+            'company_description' => $this->input('company_description') ?? $this->input('companyDescription') ?? null,
         ]);
     }
 
@@ -44,8 +46,10 @@ class RegisterRequest extends FormRequest
             'company_name' => ['required', 'string', 'max:255'],
             'company_email' => ['required', 'string', 'email', 'max:255'],
             'phone' => ['required', 'string', 'max:50'],
-            'country' => ['required', 'string', 'max:100'],
-            'industry' => ['required', 'string', 'max:100'],
+            'country'             => ['required', 'string', 'max:100'],
+            'city'                => ['required', 'string', 'max:100'],
+            'industry'            => ['required', 'string', 'max:100'],
+            'company_description' => ['required', 'string', 'min:20', 'max:500'],
             'website' => ['nullable', 'string', 'max:255'],
             'logo' => ['required'],
 
@@ -73,6 +77,8 @@ class RegisterRequest extends FormRequest
             'company_email' => 'البريد الإلكتروني للشركة',
             'phone' => 'رقم الهاتف',
             'country' => 'اسم الدولة',
+            'city' => 'المدينة أو المحافظة',
+            'company_description' => 'وصف نشاط الشركة',
             'industry' => 'مجال الشركة',
             'website' => 'الموقع الإلكتروني',
             'logo' => 'شعار الشركة',

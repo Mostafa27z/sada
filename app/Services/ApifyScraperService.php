@@ -646,7 +646,7 @@ class ApifyScraperService
             "maxItemsPerKeyword" => max(1, $maxItems),
             "sort" => "mostLiked",
             "region" => "",
-            "datePosted" => "this-month",
+            "datePosted" => "last30Days",
             "deduplicateAcrossKeywords" => true,
             "includeKeywordInsights" => false,
             "includeDownloadUrl" => false,

@@ -51,7 +51,9 @@ class DashboardService
             }
 
             $activeKeywordsCount = Keyword::where('tenant_id', $tenant->id)->where('status', Keyword::STATUS_ACTIVE)->count();
-            $accessibleSourcesCount = Source::accessible()->count();
+            $accessibleSourcesCount = Source::where(function ($q) use ($tenant) {
+                $q->whereNull('tenant_id')->orWhere('tenant_id', $tenant->id);
+            })->count();
 
             $unreadAlertsCount = Alert::where('tenant_id', $tenant->id)->where('status', Alert::STATUS_UNREAD)->count();
 
