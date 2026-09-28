@@ -60,7 +60,7 @@ Return valid JSON strictly matching:
             Log::error("ComplaintAiService::analyzeSingleComplaint error: " . $e->getMessage());
         }
 
-        // Fallback rule-based defaults if AI call fails
+        // Fallback rule-based defaults if AI call fails — dynamic based on complaint content
         $fallbackPriority = match (true) {
             $complaint->rate >= 4 => 'positive',
             $complaint->rate === 3 => 'neutral',
@@ -68,9 +68,21 @@ Return valid JSON strictly matching:
             default => 'neutral',
         };
 
+        // Build a contextual recommendation based on rating and complaint text
+        $opinion = mb_substr(trim($complaint->opinion ?? ''), 0, 80);
+        $name    = $complaint->name ?? 'العميل';
+
+        $fallbackRecommendation = match (true) {
+            $complaint->rate >= 4 => "التواصل مع {$name} لشكره على تقييمه الإيجابي وتعزيز ولائه." . ($opinion ? " استجب على تعليقه: \"{$opinion}\" بمحتوى مخصص." : ''),
+            $complaint->rate === 3 => "التواصل مع {$name} لفهم ما يمكن تحسينه." . ($opinion ? " تعليقه: \"{$opinion}\" يستحق متابعة دقيقة." : ' اسأله عن جوانب تحسين التجربة.'),
+            $complaint->rate === 2 => "الاتصال الفوري بـ{$name} للاعتذار وحل مشكلته." . ($opinion ? " المشكلة المُبلَّغ عنها: \"{$opinion}\"." : ''),
+            $complaint->rate <= 1  => "تصعيد الشكوى فوراً لمدير الدعم والتواصل مع {$name} خلال ساعات." . ($opinion ? " الشكوى: \"{$opinion}\"." : ''),
+            default => "مراجعة الشكوى والتواصل مع {$name} عبر البريد أو الهاتف لمتابعة الأمر.",
+        };
+
         return [
             'priority' => $fallbackPriority,
-            'ai_recommendation' => 'التواصل مع العميل عبر البريد الإلكتروني أو الهاتف لمتابعة الملاحظات ومعالجة المشكلة.',
+            'ai_recommendation' => $fallbackRecommendation,
         ];
     }
 
