@@ -184,33 +184,62 @@ class AiScraperService
     }
 
     /**
-     * Extract primary terms for strict keyword relevance filtering.
+     * Extract primary terms for strict keyword relevance filtering and search queries.
      */
     protected function extractPrimaryTerms(string $keyword): array
     {
         $clean = trim($keyword, " \t\n\r\0\x0B\"'");
+        // Strip leading '#' and normalize underscores from hashtags
+        $normalized = preg_replace('/^#+/u', '', $clean);
+        $normalized = str_replace('_', ' ', $normalized);
+
+        $stopWords = [
+            'آراء', 'رأي', 'اراء', 'حول', 'عن', 'في', 'تجربة', 'تجارب', 'أخبار', 'اخبار', 'خبر',
+            'رصد', 'تفاصيل', 'قصة', 'حقيقة', 'موضوع', 'استطلاع', 'بشأن', 'ضد', 'مع', 'على',
+            'من', 'إلى', 'الى', 'مراجعة', 'تقييم', 'شرح', 'نتائج', 'أحدث', 'احدث', 'عاجل'
+        ];
+
         $genericPrefixes = [
             'شركة', 'مؤسسة', 'مصنع', 'مطعم', 'محل', 'متجر', 'سوبرماركت', 'هايبرماركت', 
             'وكالة', 'مكتب', 'بنك', 'مستشفى', 'فندق', 'مدارس', 'جامعة', 'جريدة', 
-            'صحيفة', 'قناة', 'جمعية', 'وزارة', 'هيئة', 'منظمة', 'مركز',
+            'صحيفة', 'قناة', 'جمعية', 'وزارة', 'هيئة', 'منظمة', 'مركز', 'محافظة', 'مدينة', 'منطقة', 'حي',
             'company', 'agency', 'store', 'shop', 'restaurant', 'bank', 'hotel', 'hospital'
         ];
 
-        if (preg_match('/\s*[-\/|,]\s+/u', $clean)) {
-            return array_values(array_filter(array_map('trim', preg_split('/\s*[-\/|,]\s+/u', $clean))));
+        if (preg_match('/\s*[-\/|,]\s+/u', $normalized)) {
+            return array_values(array_filter(array_map('trim', preg_split('/\s*[-\/|,]\s+/u', $normalized))));
         }
 
-        $words = array_values(array_filter(explode(' ', $clean)));
+        $words = array_values(array_filter(explode(' ', $normalized)));
         if (count($words) <= 1) {
-            return !empty($words) ? $words : [$clean];
+            $w = $words[0] ?? $normalized;
+            return !empty($w) ? [$w] : [$normalized];
         }
 
-        $first = mb_strtolower($words[0]);
-        if (in_array($first, $genericPrefixes) && isset($words[1])) {
-            return [$words[1], $words[0] . ' ' . $words[1]];
+        // Extract core entity words (excluding stop words & generic prefixes)
+        $coreWords = array_values(array_filter($words, fn($w) => 
+            !in_array(mb_strtolower($w), $stopWords) && 
+            !in_array(mb_strtolower($w), $genericPrefixes)
+        ));
+
+        $terms = [];
+        // 1. Core entity phrase or individual core words
+        if (!empty($coreWords)) {
+            $terms[] = implode(' ', $coreWords);
+            foreach ($coreWords as $cw) {
+                if (mb_strlen($cw) >= 2 && !in_array($cw, $terms)) {
+                    $terms[] = $cw;
+                }
+            }
         }
 
-        return [$words[0], $words[0] . ' ' . $words[1]];
+        // 2. Full normalized phrase
+        $fullPhrase = implode(' ', $words);
+        if (!in_array($fullPhrase, $terms)) {
+            $terms[] = $fullPhrase;
+        }
+
+        return array_values(array_unique($terms));
     }
 
     /**
@@ -219,14 +248,23 @@ class AiScraperService
     protected function extractSecondaryWords(string $keyword): array
     {
         $clean = trim($keyword, " \t\n\r\0\x0B\"'");
-        if (preg_match('/\s*[-\/|,]\s+/u', $clean)) {
+        $normalized = preg_replace('/^#+/u', '', $clean);
+        $normalized = str_replace('_', ' ', $normalized);
+
+        if (preg_match('/\s*[-\/|,]\s+/u', $normalized)) {
             return [];
         }
 
-        $words = array_values(array_filter(explode(' ', $clean)));
+        $words = array_values(array_filter(explode(' ', $normalized)));
         if (count($words) <= 1) {
             return [];
         }
+
+        $stopWords = [
+            'آراء', 'رأي', 'اراء', 'حول', 'عن', 'في', 'تجربة', 'تجارب', 'أخبار', 'اخبار', 'خبر',
+            'رصد', 'تفاصيل', 'قصة', 'حقيقة', 'موضوع', 'استطلاع', 'بشأن', 'ضد', 'مع', 'على',
+            'من', 'إلى', 'الى', 'مراجعة', 'تقييم', 'شرح'
+        ];
 
         $genericPrefixes = [
             'شركة', 'مؤسسة', 'مصنع', 'مطعم', 'محل', 'متجر', 'سوبرماركت', 'هايبرماركت', 
@@ -235,11 +273,13 @@ class AiScraperService
             'company', 'agency', 'store', 'shop', 'restaurant', 'bank', 'hotel', 'hospital'
         ];
 
-        $first = mb_strtolower($words[0]);
-        $startIdx = in_array($first, $genericPrefixes) ? 2 : 1;
-        $secondary = array_slice($words, $startIdx);
+        $secondary = array_filter($words, fn($w) => 
+            !in_array(mb_strtolower($w), $stopWords) && 
+            !in_array(mb_strtolower($w), $genericPrefixes) &&
+            mb_strlen($w) >= 3
+        );
 
-        return array_values(array_filter($secondary, fn($w) => mb_strlen($w) >= 3));
+        return array_values(array_unique($secondary));
     }
 
     /**
@@ -248,10 +288,12 @@ class AiScraperService
     protected function sanitizeKeywordQuery(string $keyword): string
     {
         $kw = trim($keyword, " \t\n\r\0\x0B\"'");
+        $normalized = preg_replace('/^#+/u', '', $kw);
+        $normalized = str_replace('_', ' ', $normalized);
 
         // Split only on explicit separators like ' - ', ' / ', ' | ', or commas
-        if (preg_match('/\s+[-\/|,]\s+/u', $kw)) {
-            $parts = preg_split('/\s+[-\/|,]\s+/u', $kw);
+        if (preg_match('/\s+[-\/|,]\s+/u', $normalized)) {
+            $parts = preg_split('/\s+[-\/|,]\s+/u', $normalized);
             $tokens = [];
             foreach ($parts as $p) {
                 $p = trim($p, " \t\n\r\0\x0B\"'");
@@ -264,20 +306,10 @@ class AiScraperService
             }
         }
 
-        // Quote the primary keyword to force Google to include it and prevent irrelevant drift
-        $words = array_values(array_filter(explode(' ', $kw)));
-        if (count($words) >= 1) {
-            $primary = $words[0];
-            $secondary = array_slice($words, 1);
-            if (!empty($secondary)) {
-                $secStr = implode(' ', array_map(fn($w) => mb_strlen($w) >= 3 ? $w : '', $secondary));
-                return "\"{$primary}\" " . trim($secStr);
-            }
-            return "\"{$primary}\"";
-        }
+        $primaryTerms = $this->extractPrimaryTerms($keyword);
+        $primary = $primaryTerms[0] ?? $normalized;
 
-        $kw = preg_replace('/\s*-\s*/u', ' ', $kw);
-        return trim(preg_replace('/\s+/u', ' ', $kw));
+        return "\"{$primary}\"";
     }
 
     /**
