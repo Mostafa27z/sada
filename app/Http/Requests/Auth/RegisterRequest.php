@@ -21,16 +21,16 @@ class RegisterRequest extends FormRequest
     protected function prepareForValidation(): void
     {
         $this->merge([
-            'company_name'        => $this->input('company_name') ?? $this->input('companyName'),
-            'company_email'       => $this->input('company_email') ?? $this->input('companyEmail'),
-            'name'                => $this->input('name') ?? $this->input('fullName'),
-            'email'               => $this->input('email') ?? $this->input('workEmail'),
+            'company_name'        => trim((string) ($this->input('company_name') ?? $this->input('companyName') ?? '')),
+            'company_email'       => strtolower(trim((string) ($this->input('company_email') ?? $this->input('companyEmail') ?? ''))),
+            'name'                => trim((string) ($this->input('name') ?? $this->input('fullName') ?? '')),
+            'email'               => strtolower(trim((string) ($this->input('email') ?? $this->input('workEmail') ?? ''))),
             'password_confirmation'=> $this->input('password_confirmation') ?? $this->input('confirmPassword'),
             'agree_to_terms'      => $this->input('agree_to_terms') ?? $this->input('agreeToTerms'),
             'logo'                => $this->file('logo') ?? $this->input('logo'),
             'avatar'              => $this->file('avatar') ?? $this->input('avatar'),
-            'city'                => $this->input('city') ?? null,
-            'company_description' => $this->input('company_description') ?? $this->input('companyDescription') ?? null,
+            'city'                => trim((string) ($this->input('city') ?? '')),
+            'company_description' => trim((string) ($this->input('company_description') ?? $this->input('companyDescription') ?? '')),
         ]);
     }
 

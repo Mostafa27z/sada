@@ -18,9 +18,20 @@ class LoginUser
      */
     public function execute(array $data): array
     {
-        $user = User::where('email', $data['email'])->first();
+        $email = strtolower(trim((string) $data['email']));
+
+        $user = User::whereRaw('LOWER(TRIM(email)) = ?', [$email])->first();
+
+        // Also check if email matches a tenant's company email
+        if (!$user) {
+            $tenant = \App\Models\Tenant::whereRaw("LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(settings, '$.company_email')))) = ?", [$email])->first();
+            if ($tenant) {
+                $user = $tenant->owner() ?? $tenant->users()->first();
+            }
+        }
 
         if (!$user || !Hash::check($data['password'], $user->password)) {
+            \Illuminate\Support\Facades\Log::warning("Failed login attempt for [{$email}]. User exists: " . ($user ? "Yes (ID {$user->id}, user email {$user->email})" : "No"));
             throw ValidationException::withMessages([
                 'email' => [__('auth.failed')],
             ]);
