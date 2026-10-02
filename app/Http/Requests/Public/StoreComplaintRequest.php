@@ -15,8 +15,8 @@ class StoreComplaintRequest extends FormRequest
     {
         return [
             'tenant_id' => ['required', 'exists:tenants,id'],
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'email', 'max:255'],
+            'name' => ['nullable', 'string', 'max:255'],
+            'email' => ['nullable', 'email', 'max:255'],
             'phone' => ['nullable', 'string', 'max:50'],
             'opinion' => ['required', 'string', 'max:5000'],
             'rate' => ['required', 'integer', 'min:1', 'max:5'],

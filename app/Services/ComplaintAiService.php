@@ -17,9 +17,10 @@ class ComplaintAiService extends GeminiAnalyticsService
      */
     public function analyzeSingleComplaint(Complaint $complaint): array
     {
+        $customerName = !empty($complaint->name) ? $complaint->name : 'عميل غير مسجل (مجهول)';
         $prompt = "You are an AI customer relations assistant for a business.
 Analyze the following customer complaint/feedback:
-- Customer Name: {$complaint->name}
+- Customer Name: {$customerName}
 - Rating: {$complaint->rate}/5
 - Message/Opinion: \"{$complaint->opinion}\"
 

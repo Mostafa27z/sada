@@ -69,8 +69,8 @@ class PublicComplaintController extends Controller
 
         $complaint = Complaint::create([
             'tenant_id' => $validated['tenant_id'],
-            'name' => $validated['name'],
-            'email' => $validated['email'],
+            'name' => $validated['name'] ?? null,
+            'email' => $validated['email'] ?? null,
             'phone' => $validated['phone'] ?? null,
             'opinion' => $validated['opinion'],
             'rate' => $validated['rate'],

@@ -28,7 +28,7 @@ class ArticleAlertNotification extends Notification implements ShouldQueue
             ->greeting('مرحباً ' . $notifiable->name)
             ->line($this->alert->message)
             ->action('عرض التنبيه في المنصة', config('sada.frontend_url') . '/alerts/' . $this->alert->id)
-            ->line('شكراً لاستخدامك منصة مرآة للرصد الإعلامي.');
+            ->line('شكراً لاستخدامك منصة صدى للرصد الإعلامي وتحليل الرأي العام.');
     }
 
     public function toArray(object $notifiable): array

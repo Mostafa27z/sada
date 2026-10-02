@@ -227,6 +227,11 @@ class ReportGeneratorService
             ? "<img src='{$companyLogo}' alt='{$companyName}' style='max-height: 52px; max-width: 140px; object-fit: contain;' />"
             : "<div style='font-size: 20px; font-weight: 900; color: {$primary};'>{$companyName}</div>";
 
+        $watermarkImage = $companyLogo
+            ? "<img src='{$companyLogo}' alt='{$companyName}' style='max-width: 340px; max-height: 240px; object-fit: contain;' />"
+            : "<div style='font-size: 38px; font-weight: 900; color: {$primary}; letter-spacing: 2px;'>{$companyName}</div>";
+
+
         $insightsHtml = '';
         foreach ($positiveInsights as $item) {
             $insightsHtml .= "<li style='margin-bottom: 4px; color: #166534;'>• " . htmlspecialchars($item, ENT_QUOTES, 'UTF-8') . "</li>";
@@ -403,6 +408,17 @@ class ReportGeneratorService
         }
         th:first-child { border-top-right-radius: 8px; text-align: center; }
         th:last-child { border-top-left-radius: 8px; text-align: center; }
+        .pdf-watermark {
+            position: fixed;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(-25deg);
+            opacity: 0.05;
+            z-index: -9999;
+            pointer-events: none;
+            text-align: center;
+            width: 100%;
+        }
         @media print {
             body { padding: 0; }
             .no-print { display: none !important; }
@@ -410,6 +426,9 @@ class ReportGeneratorService
     </style>
 </head>
 <body>
+    <div class="pdf-watermark">
+        {$watermarkImage}
+    </div>
     <div class="header-bar"></div>
 
     <!-- Document Header -->

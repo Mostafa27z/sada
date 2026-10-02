@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\V1\SourceController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\SuperAdminController;
 use App\Http\Controllers\Api\V1\TenantController;
+use App\Http\Controllers\Api\V1\TenantNotificationController;
 use App\Http\Controllers\Api\V1\TenantRequestController;
 use App\Http\Controllers\Api\V1\TenantUserController;
 use App\Http\Controllers\Api\V1\TrendController;
@@ -198,6 +199,11 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/alerts', [AlertController::class, 'index']);
         Route::post('/alerts/{id}/read', [AlertController::class, 'markAsRead']);
         Route::post('/alerts/{id}/resolve', [AlertController::class, 'resolve']);
+
+        // Tenant Notification Settings & Live Test Dispatch
+        Route::get('/tenant-notifications/settings', [TenantNotificationController::class, 'getSettings']);
+        Route::post('/tenant-notifications/settings', [TenantNotificationController::class, 'updateSettings']);
+        Route::post('/tenant-notifications/test', [TenantNotificationController::class, 'testSend']);
 
         // Reports Module
         Route::get('/reports', [ReportController::class, 'index']);
