@@ -19,11 +19,26 @@ class GeminiAnalyticsService
         $this->apiKey = $settingKey ?: config('services.gemini.api_key') ?: env('GEMINI_API_KEY') ?: env('GOOGLE_API_KEY', '');
     }
 
+    public function hasApiKey(): bool
+    {
+        return !empty($this->apiKey);
+    }
+
+    public function getApiKey(): string
+    {
+        return $this->apiKey;
+    }
+
     /**
      * Call Gemini with multi-model fallback in case of 503 capacity or 429 rate limit errors.
      */
     protected function callGemini(array $messages, int $timeout = 120, array $responseFormat = ['type' => 'json_object']): ?string
     {
+        if (empty($this->apiKey)) {
+            Log::error("GeminiAnalyticsService: GEMINI_API_KEY is empty. Please set it in .env or SystemSetting.");
+            return null;
+        }
+
         $modelsToTry = array_unique(array_merge([$this->model], $this->fallbackModels));
 
         foreach ($modelsToTry as $candidateModel) {

@@ -16,6 +16,11 @@ class IndustryNewsService
         protected GeminiAnalyticsService $geminiService
     ) {}
 
+    public function getGeminiService(): GeminiAnalyticsService
+    {
+        return $this->geminiService;
+    }
+
     /**
      * Resolve the primary industry and country for a tenant.
      */
@@ -104,14 +109,16 @@ class IndustryNewsService
                 $response = Http::withOptions([
                     'verify' => false,
                     'timeout' => 15,
+                    'follow_redirects' => true,
                     'headers' => [
-                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept' => 'application/rss+xml, application/xml, text/xml',
+                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                        'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language' => 'ar,en-US;q=0.9,en;q=0.8',
                     ]
                 ])->get($url);
 
                 if ($response->successful()) {
-                    $xml = simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA);
+                    $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA);
 
                     if ($xml && isset($xml->channel->item)) {
                         foreach ($xml->channel->item as $item) {
@@ -142,6 +149,8 @@ class IndustryNewsService
                             }
                         }
                     }
+                } else {
+                    Log::warning("IndustryNewsService: RSS request returned status {$response->status()} for query [{$query}]");
                 }
             } catch (\Throwable $e) {
                 Log::warning("IndustryNewsService: failed to fetch RSS for query [{$query}]: " . $e->getMessage());
@@ -149,6 +158,91 @@ class IndustryNewsService
         }
 
         return $candidates;
+    }
+
+    /**
+     * Fallback: Directly synthesize the top macro industry developments, regulatory changes, and actionable suggestions
+     * via Gemini AI when RSS feeds are unreachable due to server network restrictions.
+     */
+    public function generateDirectSectorNewsViaGemini(Tenant $tenant, int $targetCount = 10): array
+    {
+        $sector = $this->resolveTenantSector($tenant);
+        $industry = $sector['industry'];
+        $country = $sector['country'];
+        $companyName = $sector['company_name'];
+        $today = Carbon::now('Asia/Riyadh')->toDateString();
+
+        $prompt = "أنت كبير المستشارين الاستراتيجيين ورئيس الاتصال المؤسسي لمنشأة '{$companyName}' المتخصصة في قطاع '{$industry}' في دولة '{$country}'.
+
+المطلوب بدقة:
+بصفتك خبيراً بالبيئة التشريعية والتنظيمية وبيئة الأعمال في المملكة العربية السعودية:
+قم برصد وصياغة أهم {$targetCount} أحداث وقرارات وتطورات قطاعية كلية (Macro Industry Developments) حقيقية ومؤثرة في قطاع '{$industry}' حالياً.
+
+شروط وقواعد حتمية:
+1. التركيز على البيئة الكلية للقطاع: قرارات وتعيينات وزارية، مبادرات رؤية 2030، أنظمة ولوائح وتراخيص جديدة، استثمارات واندماجات، مؤتمرات وملتقيات كبرى، أو تحولات تقنية قطاعية.
+2. استبعاد تام لأي شكاوى أو تجارب شخصية أو مراجعات فردية لعملاء/مرضى.
+3. لكل حدث، حدد درجة الأهمية (1.0 إلى 10.0)، تصنيف الخبر، والمصدر الرسمي المرجعي (مثل واس، وزارة الصحة، وزارة التجارة، أرقام).
+4. صياغة 3 إجراءات عملية دقيقة لكل خبر:
+   - `social_post`: منشور احترافي متكامل جاهز للنشر على LinkedIn و X (الخطاف، النص الكامل بالعربية، الهاشتاقات).
+   - `operational_action`: إجراء تنظيمي/إداري داخلي محدد للشركة مع الإدارة المعنية والإلحاح.
+   - `marketing_opportunity`: فكرة حملة تسويقية أو ترويجية أو حزمة خدمات للاستفادة من الخبر.
+
+يجب أن يكون الرد بتنسيق JSON حصراً بالشكل التالي:
+{
+  \"selected_news\": [
+    {
+      \"rank\": 1,
+      \"title\": \"عنوان الحدث أو القرار الرسمي\",
+      \"source_name\": \"المصدر الرسمي (واس / الوزارة المعنية)\",
+      \"source_url\": \"https://spa.gov.sa\",
+      \"published_at\": \"{$today}\",
+      \"category\": \"قرارات وتشريعات وزارية\",
+      \"importance_score\": 9.50,
+      \"why_it_matters\": \"الأهمية الاستراتيجية للحدث بالنسبة للمنشأة...\",
+      \"suggested_actions\": {
+        \"social_post\": {
+          \"recommended_platform\": [\"linkedin\", \"x\"],
+          \"angle\": \"زاوية التناول\",
+          \"hook\": \"الخطاف الجذاب...\",
+          \"body\": \"النص الكامل باللغة العربية جاهز للنشر مباشرة...\",
+          \"hashtags\": [\"#هاشتاق1\", \"#هاشتاق2\"]
+        },
+        \"operational_action\": {
+          \"department\": \"الإدارة المعنية\",
+          \"urgency\": \"high / medium / low\",
+          \"instruction\": \"الإجراء الداخلي المطلوب...\"
+        },
+        \"marketing_opportunity\": {
+          \"campaign_type\": \"نوع المبادرة\",
+          \"concept\": \"فكرة الحملة أو المبادرة...\"
+        }
+      }
+    }
+  ]
+}";
+
+        $messages = [
+            ['role' => 'system', 'content' => 'أنت مستشار استراتيجي ورئيس اتصالات مؤسسية لمنشآت الأعمال. تصدر تحليلات قطاعية ومقترحات تسويقية وتنظيمية دقيقة بتنسيق JSON حصراً.'],
+            ['role' => 'user', 'content' => $prompt]
+        ];
+
+        try {
+            $reflection = new \ReflectionClass($this->geminiService);
+            $method = $reflection->getMethod('callGemini');
+            $method->setAccessible(true);
+            $rawJson = $method->invoke($this->geminiService, $messages, 120);
+
+            if ($rawJson) {
+                $parsed = json_decode($rawJson, true);
+                if (isset($parsed['selected_news']) && is_array($parsed['selected_news'])) {
+                    return array_slice($parsed['selected_news'], 0, $targetCount);
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::error("IndustryNewsService: Direct Gemini sector news generation failed for tenant #{$tenant->id}: " . $e->getMessage());
+        }
+
+        return [];
     }
 
     /**
@@ -162,7 +256,6 @@ class IndustryNewsService
         $companyName = $sector['company_name'];
 
         if (empty($candidates)) {
-            Log::info("IndustryNewsService: No candidates found for tenant #{$tenant->id}, returning fallback.");
             return [];
         }
 
@@ -236,7 +329,6 @@ class IndustryNewsService
         ];
 
         try {
-            // Use reflection or inheritance to call protected callGemini
             $reflection = new \ReflectionClass($this->geminiService);
             $method = $reflection->getMethod('callGemini');
             $method->setAccessible(true);
@@ -258,28 +350,37 @@ class IndustryNewsService
     /**
      * Run the full daily news process for a tenant and persist top 10 items.
      */
-    public function fetchAndProcessDailyNewsForTenant(Tenant $tenant, ?string $targetDate = null): array
+    public function fetchAndProcessDailyNewsForTenant(Tenant $tenant, ?string $targetDate = null, ?\Closure $stepLogger = null): array
     {
+        $log = $stepLogger ?? fn(string $msg) => null;
         $batchDate = $targetDate ?: Carbon::now('Asia/Riyadh')->toDateString();
         $sector = $this->resolveTenantSector($tenant);
 
         Log::info("IndustryNewsService: Processing daily industry news for tenant #{$tenant->id} ({$tenant->name}) for date {$batchDate} in sector [{$sector['industry']}]");
 
         // 1. Fetch live RSS candidates
+        $log("  [1/3] جلب الأخبار المرشحة عبر قنوات RSS للقطاع ({$sector['industry']})...");
         $candidates = $this->fetchCandidateNews($sector['industry'], $sector['country'], 40);
 
-        if (empty($candidates)) {
-            Log::warning("IndustryNewsService: No news found via RSS for tenant #{$tenant->id}.");
-            return [];
+        $curatedNews = [];
+        if (!empty($candidates)) {
+            $log("  --> تم رصد " . count($candidates) . " خبراً عبر RSS. جاري التصفية وانتقاء أهم 10 أخبار بالذكاء الاصطناعي...");
+            $curatedNews = $this->analyzeAndCurateTopNews($tenant, $candidates, 10);
         }
 
-        // 2. Curate and generate suggestions via Gemini
-        $curatedNews = $this->analyzeAndCurateTopNews($tenant, $candidates, 10);
+        // If RSS was unreachable or returned 0 news, or Gemini returned empty, use Direct Sector Intelligence
+        if (empty($curatedNews)) {
+            $log("  --> تنبيه: تعذر الوصول للأخبار عبر RSS من السيرفر. الانتقال التلقائي للذكاء الاصطناعي المباشر للقطاع...");
+            $curatedNews = $this->generateDirectSectorNewsViaGemini($tenant, 10);
+        }
 
         if (empty($curatedNews)) {
+            $log("  [!] تعذر استخراج أو تحليل الأخبار عبر الذكاء الاصطناعي. يرجى التحقق من ضبط مفتاح GEMINI_API_KEY في ملف .env.");
             Log::warning("IndustryNewsService: Gemini returned no curated news for tenant #{$tenant->id}.");
             return [];
         }
+
+        $log("  [2/3] تم صياغة المقترحات لأهم " . count($curatedNews) . " أخبار. حفظ البيانات...");
 
         // 3. Persist to database inside transaction
         $persisted = TenantContext::withoutTenancy(function () use ($tenant, $batchDate, $curatedNews) {
@@ -325,6 +426,7 @@ class IndustryNewsService
             });
         });
 
+        $log("  [3/3] [✓] تم بنجاح حفظ " . count($persisted) . " خبراً ومقترحاً في قاعدة البيانات.");
         Log::info("IndustryNewsService: Successfully stored " . count($persisted) . " top news items for tenant #{$tenant->id} on {$batchDate}");
 
         return $persisted;

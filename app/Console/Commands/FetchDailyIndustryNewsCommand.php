@@ -25,6 +25,12 @@ class FetchDailyIndustryNewsCommand extends Command
 
         $this->info("Starting Daily Industry News Fetcher for date: {$batchDate} (KSA Time)");
 
+        if (!$newsService->getGeminiService()->hasApiKey()) {
+            $this->error("❌ تنبيه هام: مفتاح GEMINI_API_KEY غير موجود في ملف .env على هذا السيرفر!");
+            $this->warn("💡 يرجى إضافة GEMINI_API_KEY=AIzaSy... في ملف .env ليتمكن الذكاء الاصطناعي من تحليل الأخبار وصياغة المقترحات.");
+            return Command::FAILURE;
+        }
+
         $tenantId = $this->option('tenant');
 
         if ($tenantId) {
@@ -41,18 +47,28 @@ class FetchDailyIndustryNewsCommand extends Command
         $this->info("Found {$tenants->count()} tenant(s) to process.");
 
         foreach ($tenants as $tenant) {
-            $this->line("Processing Tenant #{$tenant->id}: {$tenant->name}...");
+            $this->line("<fg=cyan>Processing Tenant #{$tenant->id}: {$tenant->name}</>");
 
             if ($isSync) {
                 try {
-                    $items = $newsService->fetchAndProcessDailyNewsForTenant($tenant, $batchDate);
-                    $this->info(" Successfully processed and saved " . count($items) . " top news items.");
+                    $items = $newsService->fetchAndProcessDailyNewsForTenant(
+                        $tenant,
+                        $batchDate,
+                        function (string $msg) {
+                            $this->line($msg);
+                        }
+                    );
+                    if (!empty($items)) {
+                        $this->info("  --> اكتمل بنجاح: تم حفظ " . count($items) . " من أهم أخبار القطاع مع المقترحات.");
+                    } else {
+                        $this->warn("  --> انتهت المعالجة بـ 0 عناصر. راجع السجلات للتفاصيل.");
+                    }
                 } catch (\Throwable $e) {
-                    $this->error(" Failed for tenant #{$tenant->id}: " . $e->getMessage());
+                    $this->error("  ❌ Failed for tenant #{$tenant->id}: " . $e->getMessage());
                 }
             } else {
                 FetchTenantIndustryNewsJob::dispatch($tenant->id, $batchDate);
-                $this->info(" Dispatched FetchTenantIndustryNewsJob to queue.");
+                $this->info("  --> تم إرسال المهمة للطابور بنجاح.");
             }
         }
 
