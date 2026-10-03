@@ -275,6 +275,10 @@ Retrieves paginated messages ordered from newest to oldest.
           "data_source": "استراتيجية التسويق والنمو"
         }
       ],
+      "suggested_followups": [
+        "صياغة رسالة اعتذار رسمية للعملاء المتأثرين",
+        "اقتراح خطة تحسين مؤشرات الرضا لشهر أكتوبر"
+      ],
       "metadata": {
         "primary_concern": "تأخر وصول الرسائل",
         "recommended_channel": "البريد الإلكتروني ومنصة X",
@@ -370,6 +374,11 @@ Sends a message into the chat room.
           "detail": "إعداد خطة تنفيذية فورية تركز على المحتوى القصير والبث المباشر لتحقيق أقصى وصول.",
           "data_source": "استراتيجية التسويق والنمو"
         }
+      ],
+      "suggested_followups": [
+        "تحويل المنشور إلى سكريبت فيديو تيك توك مدته 30 ثانية",
+        "صياغة تغريدة سريعة ومختصرة لمنصة X",
+        "اقتراح مسابقة تفاعلية في الستوري لزيادة المتابعين"
       ],
       "metadata": {
         "primary_concern": "زيادة تفاعل الجمهور",

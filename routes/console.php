@@ -11,3 +11,5 @@ Artisan::command('inspire', function () {
 
 Schedule::command('sada:scrape-keywords')->dailyAt('00:00');
 Schedule::command('sada:sync-all')->everyFourHours();
+Schedule::command('sada:fetch-industry-news')->dailyAt('20:00')->timezone('Asia/Riyadh');
+

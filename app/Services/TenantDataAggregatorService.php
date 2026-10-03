@@ -163,6 +163,32 @@ class TenantDataAggregatorService
             }
         }
 
+        // 6. Today's Top Industry News & Strategic Recommendations - included for copywriting, trends_market, or general
+        if ($intent === 'copywriting' || $intent === 'trends_market' || $intent === 'general') {
+            try {
+                $todayIndustryNews = \App\Models\TenantIndustryNews::withoutGlobalScopes()
+                    ->where('tenant_id', $tenantId)
+                    ->orderBy('batch_date', 'desc')
+                    ->orderBy('rank', 'asc')
+                    ->take(5)
+                    ->get(['title', 'category', 'why_it_matters', 'suggested_actions'])
+                    ->map(fn ($n) => [
+                        'title' => $n->title,
+                        'category' => $n->category,
+                        'why_it_matters' => $n->why_it_matters,
+                        'suggested_social_post' => $n->suggested_actions['social_post']['body'] ?? null,
+                        'marketing_concept' => $n->suggested_actions['marketing_opportunity']['concept'] ?? null,
+                    ])
+                    ->toArray();
+
+                if (!empty($todayIndustryNews)) {
+                    $context['daily_industry_radar'] = $todayIndustryNews;
+                }
+            } catch (\Throwable $e) {
+                Log::warning("TenantDataAggregatorService industry news query: " . $e->getMessage());
+            }
+        }
+
         // 6. Recent Chat History in this Room (up to 6 previous messages)
         try {
             $chatHistory = $room->messages()

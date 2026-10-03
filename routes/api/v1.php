@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\V1\SourceController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\SuperAdminController;
 use App\Http\Controllers\Api\V1\TenantController;
+use App\Http\Controllers\Api\V1\TenantIndustryNewsController;
 use App\Http\Controllers\Api\V1\TenantNotificationController;
 use App\Http\Controllers\Api\V1\TenantRequestController;
 use App\Http\Controllers\Api\V1\TenantUserController;
@@ -251,6 +252,15 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             Route::post('/master-post', [TrendController::class, 'generateMasterPost']);
             Route::get('/{id}', [TrendController::class, 'show']);
             Route::delete('/{id}', [TrendController::class, 'destroy']);
+        });
+
+        // Tenant Daily Industry News Radar Module
+        Route::prefix('industry-news')->group(function () {
+            Route::get('/today', [TenantIndustryNewsController::class, 'today']);
+            Route::get('/', [TenantIndustryNewsController::class, 'index']);
+            Route::get('/{id}', [TenantIndustryNewsController::class, 'show']);
+            Route::patch('/{id}/status', [TenantIndustryNewsController::class, 'updateStatus']);
+            Route::post('/trigger', [TenantIndustryNewsController::class, 'trigger']);
         });
 
         // Sources Module

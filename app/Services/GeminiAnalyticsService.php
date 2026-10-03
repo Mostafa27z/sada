@@ -10,7 +10,7 @@ class GeminiAnalyticsService
     protected string $apiKey;
     protected string $apiUrl = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
     protected string $model = 'gemini-3.8-flash';
-    protected array $fallbackModels = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-exp'];
+    protected array $fallbackModels = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash-exp'];
 
     public function __construct()
     {

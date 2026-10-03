@@ -22,10 +22,16 @@ return new class extends Migration
         if (Schema::hasTable('trends')) {
             Schema::table('trends', function (Blueprint $table) {
                 if (!Schema::hasColumn('trends', 'date_from')) {
-                    $table->string('date_from', 20)->nullable()->after('country');
+                    $col = $table->string('date_from', 20)->nullable();
+                    if (Schema::hasColumn('trends', 'country')) {
+                        $col->after('country');
+                    }
                 }
                 if (!Schema::hasColumn('trends', 'date_to')) {
-                    $table->string('date_to', 20)->nullable()->after('date_from');
+                    $col = $table->string('date_to', 20)->nullable();
+                    if (Schema::hasColumn('trends', 'date_from')) {
+                        $col->after('date_from');
+                    }
                 }
             });
         }

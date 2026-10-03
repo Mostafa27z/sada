@@ -81,6 +81,11 @@ class Tenant extends Model
         return $this->belongsTo(Plan::class);
     }
 
+    public function industryNews(): HasMany
+    {
+        return $this->hasMany(TenantIndustryNews::class);
+    }
+
     /**
      * Helper: Get owner user of tenant.
      */
