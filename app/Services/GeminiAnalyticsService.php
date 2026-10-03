@@ -9,12 +9,12 @@ class GeminiAnalyticsService
 {
     protected string $apiKey;
     protected string $apiUrl = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-    protected string $model = 'gemini-3.8-flash';
-    protected array $fallbackModels = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash-exp'];
+    protected string $model = 'gemini-2.5-flash';
+    protected array $fallbackModels = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash', 'gemini-2.0-flash-exp'];
 
     public function __construct()
     {
-        $this->model = env('GEMINI_MODEL', 'gemini-3.8-flash');
+        $this->model = env('GEMINI_MODEL', 'gemini-2.5-flash');
         $settingKey = class_exists(\App\Models\SystemSetting::class) ? \App\Models\SystemSetting::get('gemini_api_key') : null;
         $this->apiKey = $settingKey ?: config('services.gemini.api_key') ?: env('GEMINI_API_KEY') ?: env('GOOGLE_API_KEY', '');
     }
@@ -50,14 +50,14 @@ class GeminiAnalyticsService
 
             try {
                 $response = $this->getHttpClient()
-                    ->retry(2, 1000, throw: false)
                     ->withHeaders([
                         'Authorization' => "Bearer {$this->apiKey}",
                         'Content-Type' => 'application/json',
                     ])->timeout($timeout)->post($this->apiUrl, $payload);
 
                 if ($response->successful()) {
-                    return $response->json('choices.0.message.content', '{}');
+                    $content = $response->json('choices.0.message.content', '{}');
+                    return trim(preg_replace('/^```(?:json)?\s*|\s*```$/iu', '', trim($content)));
                 }
 
                 $status = $response->status();
