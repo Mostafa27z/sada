@@ -9,12 +9,19 @@ class GeminiAnalyticsService
 {
     protected string $apiKey;
     protected string $apiUrl = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-    protected string $model = 'gemini-2.5-flash';
-    protected array $fallbackModels = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash', 'gemini-2.0-flash-exp'];
+    protected string $model = 'gemini-flash-lite-latest';
+    protected array $fallbackModels = [
+        'gemini-flash-lite-latest',
+        'gemini-3.8-flash',
+        'gemini-flash-latest',
+        'gemini-3.5-flash-lite',
+        'gemini-3.5-flash',
+        'gemini-2.5-flash-lite',
+    ];
 
     public function __construct()
     {
-        $this->model = env('GEMINI_MODEL', 'gemini-2.5-flash');
+        $this->model = env('GEMINI_MODEL', 'gemini-flash-lite-latest');
         $settingKey = class_exists(\App\Models\SystemSetting::class) ? \App\Models\SystemSetting::get('gemini_api_key') : null;
         $this->apiKey = $settingKey ?: config('services.gemini.api_key') ?: env('GEMINI_API_KEY') ?: env('GOOGLE_API_KEY', '');
     }
@@ -65,11 +72,11 @@ class GeminiAnalyticsService
                     'body' => $response->body(),
                 ]);
 
-                if (in_array($status, [503, 429, 404])) {
-                    continue;
-                }
+                // Always try next model on any non-successful HTTP status
+                continue;
             } catch (\Exception $e) {
                 Log::warning("Gemini model {$candidateModel} failed with exception: " . $e->getMessage());
+                continue;
             }
         }
 
