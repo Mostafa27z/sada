@@ -64,7 +64,13 @@ class FetchDailyIndustryNewsCommand extends Command
                         $this->warn("  --> انتهت المعالجة بـ 0 عناصر. راجع السجلات للتفاصيل.");
                     }
                 } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error("FetchDailyIndustryNewsCommand error for tenant #{$tenant->id}: " . $e->getMessage(), [
+                        'file' => $e->getFile(),
+                        'line' => $e->getLine(),
+                        'trace' => $e->getTraceAsString(),
+                    ]);
                     $this->error("  ❌ Failed for tenant #{$tenant->id}: " . $e->getMessage());
+                    $this->line("     Location: " . $e->getFile() . ":" . $e->getLine());
                 }
             } else {
                 FetchTenantIndustryNewsJob::dispatch($tenant->id, $batchDate);
