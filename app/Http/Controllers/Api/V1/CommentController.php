@@ -55,6 +55,7 @@ class CommentController extends Controller
             'tiktok_urls' => ['sometimes', 'array'],
             'twitter_urls' => ['sometimes', 'array'],
             'article_id' => ['sometimes', 'nullable', 'exists:articles,id'],
+            'sentiment_rubric' => ['sometimes', 'nullable', 'array'],
         ]);
 
         $tenantId = TenantContext::getTenantId();
@@ -73,7 +74,7 @@ class CommentController extends Controller
             $singleUrl = trim((string) $request->input('url'));
             if (str_contains($singleUrl, 'instagram')) {
                 $urlsByPlatform['insta_urls'][] = $singleUrl;
-            } elseif (str_contains($singleUrl, 'facebook') || str_contains($singleUrl, 'fb.com')) {
+            } elseif (str_contains($singleUrl, 'facebook') || str_contains($singleUrl, 'fb.watch')) {
                 $urlsByPlatform['facebook_urls'][] = $singleUrl;
             } elseif (str_contains($singleUrl, 'tiktok')) {
                 $urlsByPlatform['tiktok_urls'][] = $singleUrl;
@@ -85,7 +86,10 @@ class CommentController extends Controller
         ScrapePostCommentsJob::dispatch(
             $tenantId,
             $urlsByPlatform,
-            $request->get('article_id')
+            $request->get('article_id'),
+            50,
+            null,
+            $request->get('sentiment_rubric')
         );
 
         return $this->success(null, 'Scraping task queued successfully. Results will be processed asynchronously.', 202);

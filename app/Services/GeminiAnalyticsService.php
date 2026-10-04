@@ -133,14 +133,65 @@ class GeminiAnalyticsService
     }
 
     /**
+     * Build dynamic prompt snippet representing the user's custom sentiment & stance rubric.
+     */
+    protected function buildRubricPromptChunk(?array $rubric = null): string
+    {
+        if (empty($rubric)) {
+            return "";
+        }
+
+        $stance = $rubric['stance_description'] ?? ($rubric['stance'] ?? ($rubric['description'] ?? ''));
+        $posRules = $rubric['positive_rules'] ?? ($rubric['positive'] ?? '');
+        $negRules = $rubric['negative_rules'] ?? ($rubric['negative'] ?? '');
+        $neuRules = $rubric['neutral_rules'] ?? ($rubric['neutral'] ?? '');
+        $preferredSide = $rubric['preferred_side'] ?? ($rubric['target_stance'] ?? '');
+        $opposedSide = $rubric['opposed_side'] ?? '';
+        $topic = $rubric['topic_context'] ?? ($rubric['topic'] ?? '');
+
+        $chunk = "\n⚠️ تطبيق معيار ومحددات الموقف والتصنيف المخصصة للعميل (Custom Stance & Sentiment Rubric):\n";
+        $chunk .= "يجب تقييم وتصنيف المشاعر بناءً على الموقف الموجه وزاوية النظر المحددة للعميل وليس مجرد المشاعر اللغوية السطحية:\n";
+        if (!empty($topic)) {
+            $chunk .= "- سياق الموضوع/القضية: {$topic}\n";
+        }
+        if (!empty($stance)) {
+            $chunk .= "- الموقف والتوجه الاستراتيجي للعميل: {$stance}\n";
+        }
+        if (!empty($preferredSide)) {
+            $chunk .= "- الطرف/القضية التي يتبناها العميل (الحق/الحليف): {$preferredSide}\n";
+        }
+        if (!empty($opposedSide)) {
+            $chunk .= "- الطرف/الظاهرة المعارضة (الخصم/المعتدي/الجريمة): {$opposedSide}\n";
+        }
+        if (!empty($posRules)) {
+            $chunk .= "- ما يُصنف كـ 'positive' (إيجابي / +): {$posRules}\n"
+                . "  [قاعدة أساسية]: إذا كان الموضوع جريمة أو فضيحة، فإن استنكار وذم الجريمة والمجرم والتعاطف مع الضحية يُصنف كإيجابي (+) لأنه يدعم موقف العميل وقيم العدالة. وفي النزاعات والحروب، فإن دعم الطرف الحليف أو انتقاد وتراجع الخصم يُصنف كإيجابي (+).\n";
+        } else {
+            $chunk .= "- [قاعدة تصنيف]: إذا كان المحتوى يدعم موقف العميل أو يذم الظواهر السلبية كالجريمة والفساد، يُصنف 'positive'.\n";
+        }
+        if (!empty($negRules)) {
+            $chunk .= "- ما يُصنف كـ 'negative' (سلبي / -): {$negRules}\n"
+                . "  [قاعدة أساسية]: تبرير الجريمة أو الدفاع عن الجاني، أو مهاجمة الطرف الحليف والإشادة بالخصم يُصنف كسلبي (-).\n";
+        }
+        if (!empty($neuRules)) {
+            $chunk .= "- ما يُصنف كـ 'neutral' (محايد): {$neuRules}\n";
+        }
+
+        return $chunk;
+    }
+
+    /**
      * Build System Prompt for Social Listening & Analytics Report.
      */
-    protected function getSystemPrompt(): string
+    protected function getSystemPrompt(?array $rubric = null): string
     {
+        $rubricSection = $this->buildRubricPromptChunk($rubric);
+
         return <<<PROMPT
 أنت محرك ذكاء اصطناعي متخصص في تحليل البيانات وتجميع التقارير التحليلية للسمعة الرقمية (Social Listening & Analytics).
 
 مهمتك هي قراءة كافة التعليقات المرفقة والمصنفة حسب المنصة، ثم إخراج تقرير تجميعي شامل كـ JSON Object حصراً، بالهيكل والدقة التاليين:
+{$rubricSection}
 
 {
   "overall_sentiment_summary": {
@@ -205,7 +256,7 @@ PROMPT;
     /**
      * Send post comments to Gemini LLM for sentiment analytics.
      */
-    public function analyzeSentiment(array $insta = [], array $fb = [], array $x = [], array $tiktok = []): array
+    public function analyzeSentiment(array $insta = [], array $fb = [], array $x = [], array $tiktok = [], ?array $rubric = null): array
     {
         if (empty($this->apiKey)) {
             Log::error("GOOGLE_API_KEY is missing in .env");
@@ -216,7 +267,7 @@ PROMPT;
         $userMessage = "إليك قائمة التعليقات الكلية مقسمة حسب المنصات:\n" . $formattedComments;
 
         $messages = [
-            ['role' => 'system', 'content' => $this->getSystemPrompt()],
+            ['role' => 'system', 'content' => $this->getSystemPrompt($rubric)],
             ['role' => 'user', 'content' => $userMessage],
         ];
 
@@ -231,11 +282,10 @@ PROMPT;
     }
 
     /**
-     * Accurately classify sentiment (positive, negative, neutral) for individual posts.
-     * Takes an array of posts, sends batches to Gemini, and returns an associative array
-     * keyed by post identifier with 'sentiment' ('positive'|'negative'|'neutral') and 'sentiment_score'.
+     * Accurately classify sentiment (positive, negative, neutral) for individual posts,
+     * with support for custom stance/rubric rules.
      */
-    public function classifyPostsSentiment(array $posts): array
+    public function classifyPostsSentiment(array $posts, ?array $rubric = null): array
     {
         if (empty($posts) || empty($this->apiKey)) {
             return [];
@@ -262,22 +312,22 @@ PROMPT;
         }
 
         $results = [];
+        $rubricChunk = $this->buildRubricPromptChunk($rubric);
 
         // Batch in groups of 30 for high reliability and fast response
         $chunks = array_chunk($itemsToClassify, 30);
 
         foreach ($chunks as $chunk) {
             $prompt = <<<PROMPT
-أنت خبير لغوي متخصص في تحليل مشاعر منشورات وتعليقات منصات التواصل الاجتماعي العربية واللهجات المحلية (السعودية، الخليجية، المصرية، الشامية، إلخ).
+أنت خبير لغوي واستراتيجي متخصص في تحليل مشاعر منشورات وتعليقات منصات التواصل الاجتماعي ومقالات الرأي العربية واللهجات المحلية (السعودية، الخليجية، المصرية، الشامية، إلخ).
+{$rubricChunk}
 
-المطلوب: تصنيف المشاعر لكل منشور بدقة شديدة وموضوعية تامة إلى إحدى الحالات الثلاث:
-1. "negative": أي شكوى، استياء، اعتراض، انتقاد، سخرية واستهزاء، غضب، تحذير من خدمة/منتج، بلاغ عن مشكلة.
-2. "neutral": نقل خبر محايد، سؤال أو استفسار، نشر رابط، معلومة مجردة بدون مدح أو ذم، إحصائية.
-3. "positive": مدح صريح، إشادة، شكر، تشجيع، تعبير عن الرضا أو الإعجاب، تفاؤل.
+المطلوب: تصنيف المشاعر والمواقف لكل عنصر بدقة وموضوعية إلى إحدى الحالات الثلاث (positive / negative / neutral):
+1. "positive": أي محتوى يتوافق مع ما تم تعريفه كإيجابي أعلاه، أو إشادة، شكر، تشجيع، استنكار للجريمة والخصوم، دعم للحق وللقضية المستهدفة.
+2. "negative": أي محتوى يتوافق مع ما تم تعريفه كسلبي أعلاه، أو تبرير للجريمة، هجوم على الحليف، شكوى، استياء، تشكيك.
+3. "neutral": نقل خبر محايد، سؤال أو استفسار، نشر رابط، معلومة مجردة بدون اتخاذ موقف أو مدح أو ذم.
 
-حذارِ من تصنيف كل المنشورات كـ "positive"! يجب أن تعكس المشاعر الحقيقية بصرامة.
-
-إليك المنشورات كـ JSON Array:
+إليك العناصر المطلوب تصنيفها كـ JSON Array:
 PROMPT;
 
             $systemInstruction = <<<SYS
@@ -289,7 +339,7 @@ PROMPT;
       "id": "معرف المنشور",
       "sentiment": "positive" أو "negative" أو "neutral",
       "sentiment_score": 0.85,
-      "reason": "سبب موجز للتصنيف"
+      "reason": "سبب تصنيف المنشور بهذا الشعور وفق المعيار المحدد"
     }
   ]
 }
@@ -324,6 +374,7 @@ SYS;
                             $results[(string)$key] = [
                                 'sentiment' => $sent,
                                 'sentiment_score' => $score,
+                                'reason' => (string)($cItem['reason'] ?? ''),
                             ];
                         }
                     }

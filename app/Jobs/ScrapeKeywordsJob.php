@@ -42,13 +42,23 @@ class ScrapeKeywordsJob implements ShouldQueue
 
         TenantContext::setTenant($tenant);
 
+        $rubric = null;
+        if ($this->collectionId) {
+            $col = Collection::withoutGlobalScopes()->find($this->collectionId);
+            $rubric = $col?->getEffectiveRubric();
+        }
+        if (empty($rubric)) {
+            $rubric = $tenant->getSentimentRubric();
+        }
+
         $result = $aiService->scrapeByKeywords(
             $this->keywords,
             $this->platforms,
             $this->country,
             $this->dateFrom,
             $this->dateTo,
-            $this->limit
+            $this->limit,
+            $rubric
         );
 
         if (($result['status'] ?? '') !== 'success') {
@@ -172,6 +182,7 @@ class ScrapeKeywordsJob implements ShouldQueue
                         'reach' => (is_array($post) ? ($post['reach'] ?? null) : null),
                         'engagement' => (is_array($post) ? ($post['engagement'] ?? null) : null),
                         'raw_post' => $post,
+                        'sentiment_reason' => is_array($post) ? ($post['sentiment_reason'] ?? null) : null,
                         'analytics' => $result['analytics'] ?? [],
                     ],
                 ]);

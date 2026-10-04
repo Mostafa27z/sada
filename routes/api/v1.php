@@ -176,6 +176,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // Roles in active tenant
         Route::get('/roles', [RoleController::class, 'index']);
 
+        // Tenant Global Sentiment Rubric Settings
+        Route::get('/tenant/sentiment-rubric', [TenantController::class, 'getSentimentRubric']);
+        Route::put('/tenant/sentiment-rubric', [TenantController::class, 'updateSentimentRubric']);
+
         // Subscription & Usage Limits
         Route::get('/subscription', [SubscriptionController::class, 'show']);
         Route::get('/usage', [SubscriptionController::class, 'usage']);
@@ -273,6 +277,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // Articles Module
         Route::get('/articles', [ArticleController::class, 'index']);
         Route::get('/articles/{id}', [ArticleController::class, 'show']);
+        Route::post('/articles/{id}/reanalyze-sentiment', [ArticleController::class, 'reanalyzeSentiment']);
 
         // Collections Module
         Route::get('/collections', [CollectionController::class, 'index']);

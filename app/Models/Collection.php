@@ -27,12 +27,30 @@ class Collection extends Model
         'date_from',
         'date_to',
         'keywords',
+        'sentiment_rubric',
         'comments_limit',
         'color',
         'status',
         'error_message',
         'created_by',
     ];
+
+    protected $casts = [
+        'sentiment_rubric' => 'array',
+    ];
+
+    /**
+     * Get effective sentiment rubric (collection specific rubric, or fallback to tenant global rubric).
+     */
+    public function getEffectiveRubric(): ?array
+    {
+        if (!empty($this->sentiment_rubric) && is_array($this->sentiment_rubric)) {
+            return $this->sentiment_rubric;
+        }
+
+        $tenantRubric = $this->tenant?->settings['sentiment_rubric'] ?? null;
+        return is_array($tenantRubric) && !empty($tenantRubric) ? $tenantRubric : null;
+    }
 
     public function creator(): BelongsTo
     {

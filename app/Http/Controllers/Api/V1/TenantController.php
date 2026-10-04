@@ -108,4 +108,53 @@ class TenantController extends Controller
             'current_tenant' => new TenantResource($tenant),
         ], __('messages.tenant_switched'));
     }
+
+    /**
+     * Get active tenant's global sentiment rubric.
+     */
+    public function getSentimentRubric(Request $request): JsonResponse
+    {
+        $tenant = TenantContext::getTenant();
+        if (!$tenant) {
+            return $this->error(__('messages.forbidden'), 403);
+        }
+
+        return $this->success([
+            'tenant_id' => $tenant->id,
+            'tenant_name' => $tenant->name,
+            'sentiment_rubric' => $tenant->getSentimentRubric(),
+        ]);
+    }
+
+    /**
+     * Update active tenant's global sentiment rubric.
+     */
+    public function updateSentimentRubric(Request $request): JsonResponse
+    {
+        $tenant = TenantContext::getTenant();
+        if (!$tenant) {
+            return $this->error(__('messages.forbidden'), 403);
+        }
+
+        $request->validate([
+            'sentiment_rubric' => ['nullable', 'array'],
+            'sentiment_rubric.stance_description' => ['nullable', 'string'],
+            'sentiment_rubric.positive_rules' => ['nullable', 'string'],
+            'sentiment_rubric.negative_rules' => ['nullable', 'string'],
+            'sentiment_rubric.neutral_rules' => ['nullable', 'string'],
+            'sentiment_rubric.preferred_side' => ['nullable', 'string'],
+            'sentiment_rubric.opposed_side' => ['nullable', 'string'],
+        ]);
+
+        $settings = $tenant->settings ?? [];
+        $settings['sentiment_rubric'] = $request->input('sentiment_rubric');
+        $tenant->settings = $settings;
+        $tenant->save();
+
+        return $this->success([
+            'tenant_id' => $tenant->id,
+            'tenant_name' => $tenant->name,
+            'sentiment_rubric' => $tenant->getSentimentRubric(),
+        ], __('messages.updated'));
+    }
 }

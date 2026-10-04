@@ -25,7 +25,7 @@ class AiScraperService
     /**
      * Scrape posts and generate sentiment analytics by keywords across platforms natively.
      */
-    public function scrapeByKeywords(array $keywords, array $platforms = ['instagram', 'facebook', 'x', 'tiktok'], ?string $country = null, ?string $dateFrom = null, ?string $dateTo = null, int $limit = 50): array
+    public function scrapeByKeywords(array $keywords, array $platforms = ['instagram', 'facebook', 'x', 'tiktok'], ?string $country = null, ?string $dateFrom = null, ?string $dateTo = null, int $limit = 50, ?array $rubric = null): array
     {
         if (empty($keywords)) {
             return [
@@ -63,23 +63,26 @@ class AiScraperService
                 $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
 
                 if (!empty($allPosts)) {
-                    // Classify individual sentiments for each post via Gemini
+                    // Classify individual sentiments for each post via Gemini using rubric
                     $sentimentMap = [];
                     try {
-                        $sentimentMap = $this->geminiService->classifyPostsSentiment($allPosts);
+                        $sentimentMap = $this->geminiService->classifyPostsSentiment($allPosts, $rubric);
                     } catch (\Throwable $geminiErr) {
                         Log::warning("Gemini classifyPostsSentiment error: " . $geminiErr->getMessage());
                     }
 
-                    $enrichSentiment = function(&$postList) use ($sentimentMap) {
+                    $enrichSentiment = function(&$postList) use ($sentimentMap, $rubric) {
                         foreach ($postList as &$post) {
                             $key = $post['post_id'] ?? $post['external_id'] ?? null;
                             if ($key && isset($sentimentMap[(string)$key])) {
                                 $post['sentiment'] = $sentimentMap[(string)$key]['sentiment'];
                                 $post['sentiment_score'] = $sentimentMap[(string)$key]['sentiment_score'];
+                                $post['sentiment_reason'] = $sentimentMap[(string)$key]['reason'] ?? null;
                             } else {
-                                $post['sentiment'] = $this->detectFallbackSentiment($post['text'] ?? '');
-                                $post['sentiment_score'] = 0.8;
+                                $fbData = $this->classifyArabicSentiment($post['text'] ?? '', $rubric);
+                                $post['sentiment'] = $fbData['sentiment'];
+                                $post['sentiment_score'] = $fbData['score'] ?? 0.8;
+                                $post['sentiment_reason'] = $fbData['reason'] ?? null;
                             }
                         }
                         unset($post);
@@ -91,7 +94,7 @@ class AiScraperService
                     $enrichSentiment($tiktokPosts);
                     $enrichSentiment($allPosts);
 
-                    $analyticsJson = $this->geminiService->analyzeSentiment($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
+                    $analyticsJson = $this->geminiService->analyzeSentiment($instaPosts, $fbPosts, $xPosts, $tiktokPosts, $rubric);
 
                     return [
                         'status' => 'success',
@@ -1628,7 +1631,7 @@ class AiScraperService
     /**
      * Intelligent Arabic sentiment analysis for comments and social posts.
      */
-    public function classifyArabicSentiment(string $text): array
+    public function classifyArabicSentiment(string $text, ?array $rubric = null): array
     {
         $clean = trim($text);
         if (empty($clean)) {
@@ -1636,6 +1639,55 @@ class AiScraperService
         }
 
         $normalized = ' ' . mb_strtolower($clean) . ' ';
+
+        // 0. Custom Rubric / Stance Heuristic Override
+        if (!empty($rubric)) {
+            $posRules = mb_strtolower($rubric['positive_rules'] ?? ($rubric['positive'] ?? ''));
+            $negRules = mb_strtolower($rubric['negative_rules'] ?? ($rubric['negative'] ?? ''));
+            $preferredSide = mb_strtolower($rubric['preferred_side'] ?? ($rubric['target_stance'] ?? ''));
+            $opposedSide = mb_strtolower($rubric['opposed_side'] ?? '');
+
+            // Crime scenario: Condemning crime/criminals is POSITIVE for society/justice stance
+            $isAntiCrime = str_contains($posRules, 'شجب') || str_contains($posRules, 'إدانة') || str_contains($posRules, 'جريمة') || str_contains($posRules, 'المجرم') || str_contains($posRules, 'عقاب');
+            if ($isAntiCrime) {
+                $crimeCondemnTerms = ['اعدام', 'إعدام', 'حسبنا الله', 'حسبي الله', 'مجرم', 'سفاح', 'قاتل', 'خسيس', 'بشع', 'بشعة', 'وسخ', 'نذل', 'حقير', 'تستاهل العقاب', 'عقوبة', 'القصاص', 'سجن', 'الله ينتقم'];
+                foreach ($crimeCondemnTerms as $cct) {
+                    if (str_contains($normalized, $cct)) {
+                        return [
+                            'sentiment' => 'positive',
+                            'score' => 0.90,
+                            'reason' => 'استنكار الجريمة والمجرم يُعد موقفاً إيجابياً متوافقاً مع معيار الـ Rubric',
+                        ];
+                    }
+                }
+            }
+
+            // Stance / conflict side matching
+            if (!empty($preferredSide)) {
+                $prefKeywords = array_filter(explode(' ', $preferredSide), fn($w) => mb_strlen(trim($w)) > 2);
+                foreach ($prefKeywords as $pw) {
+                    if (str_contains($normalized, $pw)) {
+                        return [
+                            'sentiment' => 'positive',
+                            'score' => 0.88,
+                            'reason' => "دعم ومؤازرة القضية/الطرف المفضل ({$preferredSide}) وفق المعيار المخصص",
+                        ];
+                    }
+                }
+            }
+            if (!empty($opposedSide)) {
+                $oppKeywords = array_filter(explode(' ', $opposedSide), fn($w) => mb_strlen(trim($w)) > 2);
+                foreach ($oppKeywords as $ow) {
+                    if (str_contains($normalized, $ow)) {
+                        return [
+                            'sentiment' => 'negative',
+                            'score' => 0.88,
+                            'reason' => "ذكر الطرف المعادي/المعارض ({$opposedSide}) وفق المعيار المخصص",
+                        ];
+                    }
+                }
+            }
+        }
 
         // 1. Check for Contact Info / Phone Numbers without emotion (Neutral)
         if (preg_match('/(?:05\d{8}|\+?966\d{8,9}|\+?20\d{9,10}|\b\d{8,12}\b)/', $clean)) {

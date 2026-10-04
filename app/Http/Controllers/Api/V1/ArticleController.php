@@ -102,4 +102,77 @@ class ArticleController extends Controller
 
         return $this->success(new ArticleResource($article));
     }
+
+    /**
+     * Re-analyze sentiment for an article and its associated comments using custom rubric.
+     */
+    public function reanalyzeSentiment(Request $request, int $id, \App\Services\GeminiAnalyticsService $geminiService)
+    {
+        $article = Article::with(['source', 'keywords', 'comments'])->find($id);
+
+        if (!$article) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        $rubric = $request->input('sentiment_rubric');
+        if (empty($rubric)) {
+            $rubric = \App\Support\TenantContext::getTenant()?->getSentimentRubric();
+        }
+
+        // 1. Re-analyze article itself
+        $articleText = trim(($article->title ?? '') . "\n" . ($article->summary ?? '') . "\n" . ($article->content ?? ''));
+        $classifiedArticle = $geminiService->classifyPostsSentiment([
+            [
+                'id' => (string) $article->id,
+                'text' => $articleText,
+            ]
+        ], $rubric);
+
+        if (!empty($classifiedArticle[(string) $article->id])) {
+            $res = $classifiedArticle[(string) $article->id];
+            $article->sentiment = $res['sentiment'];
+            $article->sentiment_score = $res['sentiment_score'];
+            $raw = $article->raw_data ?? [];
+            $raw['sentiment_reason'] = $res['reason'] ?? null;
+            if (!empty($rubric)) {
+                $raw['sentiment_rubric_used'] = $rubric;
+            }
+            $article->raw_data = $raw;
+            $article->save();
+        }
+
+        // 2. Re-analyze comments if any
+        if ($article->comments->isNotEmpty()) {
+            $commentsToClassify = [];
+            foreach ($article->comments as $comment) {
+                $commentsToClassify[] = [
+                    'id' => (string) $comment->id,
+                    'text' => $comment->comment_text,
+                ];
+            }
+
+            $classifiedComments = $geminiService->classifyPostsSentiment($commentsToClassify, $rubric);
+            foreach ($article->comments as $comment) {
+                if (isset($classifiedComments[(string) $comment->id])) {
+                    $cRes = $classifiedComments[(string) $comment->id];
+                    $cRaw = $comment->raw_data ?? [];
+                    $cRaw['sentiment_reason'] = $cRes['reason'] ?? null;
+                    if (!empty($rubric)) {
+                        $cRaw['sentiment_rubric_used'] = $rubric;
+                    }
+
+                    $comment->update([
+                        'sentiment' => $cRes['sentiment'],
+                        'sentiment_score' => $cRes['sentiment_score'],
+                        'raw_data' => $cRaw,
+                    ]);
+                }
+            }
+        }
+
+        return $this->success(
+            new ArticleResource($article->fresh(['source', 'keywords', 'comments'])),
+            'Sentiment re-analyzed successfully against specified rubric.'
+        );
+    }
 }

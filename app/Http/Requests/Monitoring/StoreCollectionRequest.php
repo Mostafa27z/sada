@@ -25,6 +25,7 @@ class StoreCollectionRequest extends FormRequest
             'keywords' => ['sometimes', 'nullable', 'array'],
             'date_from' => ['sometimes', 'nullable', 'string', 'max:20'],
             'date_to' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'sentiment_rubric' => ['sometimes', 'nullable', 'array'],
         ];
     }
 }

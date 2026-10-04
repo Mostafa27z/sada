@@ -41,6 +41,7 @@ class ArticleResource extends JsonResource
             'formatted_date' => $formattedDate,
             'sentiment' => $this->sentiment,
             'sentiment_score' => $this->sentiment_score ? (float) $this->sentiment_score : null,
+            'sentiment_reason' => $this->raw_data['sentiment_reason'] ?? null,
             'ai_metadata' => $this->ai_metadata,
             'platform' => $this->raw_data['platform'] ?? ($this->source?->type ?? 'web'),
             'reach' => $this->raw_data['reach'] ?? null,

@@ -113,4 +113,13 @@ class Tenant extends Model
     {
         return $this->status === self::STATUS_CANCELLED;
     }
+
+    /**
+     * Get global sentiment rubric configured for this tenant.
+     */
+    public function getSentimentRubric(): ?array
+    {
+        $rubric = $this->settings['sentiment_rubric'] ?? null;
+        return is_array($rubric) && !empty($rubric) ? $rubric : null;
+    }
 }

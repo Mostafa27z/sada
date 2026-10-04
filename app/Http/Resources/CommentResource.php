@@ -33,6 +33,7 @@ class CommentResource extends JsonResource
             'comment_text' => $this->comment_text,
             'sentiment' => $this->sentiment,
             'sentiment_score' => $this->sentiment_score,
+            'sentiment_reason' => $this->raw_data['sentiment_reason'] ?? null,
             'likes_count' => $this->likes_count ?? 0,
             'replies_count' => $this->replies_count ?? ($this->relationLoaded('replies') ? $this->replies->count() : 0),
             'comment_created_at' => $realDate?->toISOString(),

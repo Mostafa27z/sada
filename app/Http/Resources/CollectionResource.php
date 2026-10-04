@@ -108,6 +108,8 @@ class CollectionResource extends JsonResource
             'error_message' => $errorMessage,
             'type' => $isKeyword ? 'keyword' : 'campaign',
             'keyword' => $keyword,
+            'sentiment_rubric' => $this->sentiment_rubric,
+            'effective_rubric' => $this->getEffectiveRubric(),
             'reach' => $reach,
             'engagement' => $engagement,
             'results_count' => $resultsCount,

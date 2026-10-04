@@ -26,7 +26,8 @@ class ScrapePostCommentsJob implements ShouldQueue
         public array $urlsByPlatform,
         public ?int $articleId = null,
         public mixed $commentsLimit = 50,
-        public ?int $collectionId = null
+        public ?int $collectionId = null,
+        public ?array $sentimentRubric = null
     ) {}
 
     public function handle(AiScraperService $aiService): void
@@ -38,7 +39,16 @@ class ScrapePostCommentsJob implements ShouldQueue
 
         TenantContext::setTenant($tenant);
 
-        $result = $aiService->scrapePostComments($this->urlsByPlatform, $this->commentsLimit);
+        $rubric = $this->sentimentRubric;
+        if (empty($rubric) && $this->collectionId) {
+            $col = Collection::withoutGlobalScopes()->find($this->collectionId);
+            $rubric = $col?->getEffectiveRubric();
+        }
+        if (empty($rubric)) {
+            $rubric = $tenant->getSentimentRubric();
+        }
+
+        $result = $aiService->scrapePostComments($this->urlsByPlatform, $this->commentsLimit, $rubric);
 
         if (($result['status'] ?? '') !== 'success') {
             Log::warning("ScrapePostCommentsJob failed for tenant {$this->tenantId}", ['result' => $result]);
@@ -98,6 +108,7 @@ class ScrapePostCommentsJob implements ShouldQueue
                     $text = trim($commentItem['text'] ?? '');
                     $sentiment = $commentItem['sentiment'] ?? 'positive';
                     $sentimentScore = $commentItem['sentiment_score'] ?? null;
+                    $sentimentReason = $commentItem['sentiment_reason'] ?? ($commentItem['reason'] ?? null);
                     $createdAt = !empty($commentItem['comment_created_at'])
                         ? $commentItem['comment_created_at']
                         : (!empty($commentItem['created_at']) ? $commentItem['created_at'] : now());
@@ -114,6 +125,7 @@ class ScrapePostCommentsJob implements ShouldQueue
                         $sentiment = 'neutral';
                     }
                     $sentimentScore = null;
+                    $sentimentReason = null;
                     $createdAt = now();
                     $externalId = null;
                     $parentExternalId = null;
@@ -130,6 +142,7 @@ class ScrapePostCommentsJob implements ShouldQueue
                     'text' => $text,
                     'sentiment' => $sentiment,
                     'sentiment_score' => $sentimentScore,
+                    'sentiment_reason' => $sentimentReason,
                     'external_id' => $externalId,
                     'parent_external_id' => $parentExternalId,
                     'likes_count' => $likesCount,
@@ -177,6 +190,7 @@ class ScrapePostCommentsJob implements ShouldQueue
                         'author' => $c['author'],
                         'text' => $c['text'],
                         'sentiment' => $c['sentiment'],
+                        'sentiment_reason' => $c['sentiment_reason'] ?? null,
                         'analytics' => $result['analytics'] ?? [],
                     ],
                     'created_at' => $c['comment_created_at'],
@@ -247,11 +261,12 @@ class ScrapePostCommentsJob implements ShouldQueue
                     'sentiment_score' => $c['sentiment_score'],
                     'likes_count' => $c['likes_count'],
                     'comment_created_at' => $c['comment_created_at'],
-                    'raw_data' => $c['raw_data'] ?? [
+                    'raw_data' => array_merge($c['raw_data'] ?? [], [
                         'author' => $c['author'],
                         'text' => $c['text'],
                         'sentiment' => $c['sentiment'],
-                    ],
+                        'sentiment_reason' => $c['sentiment_reason'] ?? null,
+                    ]),
                     'created_at' => $c['comment_created_at'],
                 ]
             );
