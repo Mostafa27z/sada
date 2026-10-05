@@ -514,7 +514,7 @@ class AiScraperService
                     default => (string) rand(100, 850),
                 };
 
-                $createdAt = $tsVal ? date('Y-m-d H:i:s', $tsVal) : date('Y-m-d H:i:s', strtotime('-' . rand(10, 360) . ' minutes'));
+                $createdAt = ($tsVal && $tsVal >= 946684800) ? date('Y-m-d H:i:s', $tsVal) : date('Y-m-d H:i:s', strtotime('-' . rand(10, 360) . ' minutes'));
 
                 $postsByPlatform[$key][] = [
                     'keyword' => $kw,
@@ -753,7 +753,8 @@ class AiScraperService
 
                     if (empty($rawTitle) || empty($link)) continue;
 
-                    $timestamp = !empty($pubDate) ? strtotime($pubDate) : $now;
+                    $parsedPub = !empty($pubDate) ? $this->parseSocialTimestamp($pubDate) : null;
+                    $timestamp = ($parsedPub && $parsedPub >= 946684800) ? $parsedPub : $now;
 
                     // 1. Strict Date Check: Reject articles older than 48 hours
                     if (($now - $timestamp) > $maxAgeSeconds) {
@@ -1101,7 +1102,8 @@ class AiScraperService
                     $sentimentData = $this->classifyArabicSentiment($text);
                     $sentimentCounts[$sentimentData['sentiment']]++;
 
-                    $createdAt = !empty($item['date']) ? date('Y-m-d H:i:s', strtotime($item['date'])) : date('Y-m-d H:i:s');
+                    $parsedDate = !empty($item['date']) ? $this->parseSocialTimestamp($item['date']) : null;
+                    $createdAt = ($parsedDate && $parsedDate >= 946684800) ? date('Y-m-d H:i:s', $parsedDate) : date('Y-m-d H:i:s');
                     $base64Id = !empty($item['id']) ? (string) $item['id'] : null;
                     $commentId = !empty($item['commentId']) ? (string) $item['commentId'] : null;
                     $externalId = (string) ($item['id'] ?? $item['commentId'] ?? ('fb_c_' . $idx));
@@ -1146,7 +1148,8 @@ class AiScraperService
                             $rSentiment = $this->classifyArabicSentiment($rText);
                             $sentimentCounts[$rSentiment['sentiment']]++;
 
-                            $rCreatedAt = !empty($rItem['date']) ? date('Y-m-d H:i:s', strtotime($rItem['date'])) : $createdAt;
+                            $parsedRDate = !empty($rItem['date']) ? $this->parseSocialTimestamp($rItem['date']) : null;
+                            $rCreatedAt = ($parsedRDate && $parsedRDate >= 946684800) ? date('Y-m-d H:i:s', $parsedRDate) : $createdAt;
                             $rExternalId = (string) ($rItem['id'] ?? $rItem['commentId'] ?? ($externalId . '_rep_' . $rIdx));
 
                             $rObj = [
@@ -1250,7 +1253,8 @@ class AiScraperService
                     $sentimentData = $this->classifyArabicSentiment($text);
                     $sentimentCounts[$sentimentData['sentiment']]++;
 
-                    $createdAt = !empty($item['timestamp']) ? date('Y-m-d H:i:s', strtotime($item['timestamp'])) : date('Y-m-d H:i:s');
+                    $parsedDate = !empty($item['timestamp']) ? $this->parseSocialTimestamp($item['timestamp']) : null;
+                    $createdAt = ($parsedDate && $parsedDate >= 946684800) ? date('Y-m-d H:i:s', $parsedDate) : date('Y-m-d H:i:s');
                     $externalId = (string) ($item['id'] ?? ('ig_c_' . $idx));
                     
                     // Check if item is a reply returned as a separate record
@@ -1290,7 +1294,8 @@ class AiScraperService
                             $rSentiment = $this->classifyArabicSentiment($rText);
                             $sentimentCounts[$rSentiment['sentiment']]++;
 
-                            $rCreatedAt = !empty($rItem['timestamp']) ? date('Y-m-d H:i:s', strtotime($rItem['timestamp'])) : $createdAt;
+                            $parsedRDate = !empty($rItem['timestamp']) ? $this->parseSocialTimestamp($rItem['timestamp']) : null;
+                            $rCreatedAt = ($parsedRDate && $parsedRDate >= 946684800) ? date('Y-m-d H:i:s', $parsedRDate) : $createdAt;
                             $rExternalId = (string) ($rItem['id'] ?? ($externalId . '_rep_' . $rIdx));
 
                             $rObj = [
@@ -2148,7 +2153,16 @@ class AiScraperService
         if (empty($raw)) return null;
         if (is_numeric($raw)) {
             $val = intval($raw);
-            return $val > 9999999999 ? intval($val / 1000) : $val;
+            if ($val > 9999999999) {
+                $val = intval($val / 1000);
+            }
+            if ($val >= 2000 && $val <= 2100) {
+                return time() - rand(3600, 86400);
+            }
+            if ($val < 946684800) {
+                return null;
+            }
+            return $val;
         }
 
         $str = trim((string)$raw);
@@ -2192,8 +2206,13 @@ class AiScraperService
         $cleanStr = preg_replace('/[^\w\s:,\-\/]/u', ' ', $strEng);
         $cleanStr = trim(preg_replace('/\s+/', ' ', $cleanStr));
         $parsed = strtotime($cleanStr);
+        $res = $parsed ?: (strtotime($str) ?: null);
 
-        return $parsed ?: (strtotime($str) ?: null);
+        if ($res && $res < 946684800) {
+            return null;
+        }
+
+        return $res;
     }
 }
 

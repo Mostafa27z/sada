@@ -30,13 +30,15 @@ class RegisterUser
         }
 
         if (is_string($image)) {
-            if (preg_match('/^data:image\/(\w+);base64,/', $image, $type)) {
+            if (preg_match('/^data:image\/([a-zA-Z0-9\+\-\.]+);base64,/', $image, $type)) {
                 $data = substr($image, strpos($image, ',') + 1);
                 $ext = strtolower($type[1]);
-                if ($ext === 'svg+xml') {
+                if (str_contains($ext, 'svg')) {
                     $ext = 'svg';
+                } elseif ($ext === 'jpeg') {
+                    $ext = 'jpg';
                 }
-                $decoded = base64_decode($data);
+                $decoded = base64_decode(str_replace(' ', '+', $data));
                 if ($decoded !== false) {
                     $filename = $directory . '/' . Str::random(32) . '.' . $ext;
                     Storage::disk('public')->put($filename, $decoded);

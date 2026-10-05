@@ -2,13 +2,21 @@
 
 namespace Tests\Feature\Auth;
 
+use App\Jobs\InitializeTenantIntelligenceJob;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class RegisterTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Queue::fake([InitializeTenantIntelligenceJob::class]);
+    }
 
     private function validRegistrationData(array $overrides = []): array
     {
@@ -17,6 +25,8 @@ class RegisterTest extends TestCase
             'company_email' => 'contact@sada-ai.com',
             'phone' => '+966500000000',
             'country' => 'المملكة العربية السعودية',
+            'city' => 'الرياض',
+            'company_description' => 'شركة رائدة تعمل في مجال رصد وتحليل بيانات وسائل التواصل الاجتماعي.',
             'industry' => 'الإعلام والذكاء الاصطناعي',
             'website' => 'https://sada-ai.com',
             'name' => 'أحمد محمد',

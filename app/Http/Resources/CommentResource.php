@@ -11,7 +11,17 @@ class CommentResource extends JsonResource
     {
         $realDate = $this->comment_created_at ?: $this->created_at;
         if ($realDate && is_string($realDate)) {
-            $realDate = \Carbon\Carbon::parse($realDate);
+            try {
+                $realDate = \Carbon\Carbon::parse($realDate);
+            } catch (\Throwable) {
+                $realDate = null;
+            }
+        }
+        if ($realDate && $realDate->year < 2000) {
+            $realDate = $this->created_at ? \Carbon\Carbon::parse($this->created_at) : null;
+            if (!$realDate || $realDate->year < 2000) {
+                $realDate = now();
+            }
         }
 
         $time12 = '';
@@ -36,7 +46,7 @@ class CommentResource extends JsonResource
             'sentiment_reason' => $this->raw_data['sentiment_reason'] ?? null,
             'likes_count' => $this->likes_count ?? 0,
             'replies_count' => $this->replies_count ?? ($this->relationLoaded('replies') ? $this->replies->count() : 0),
-            'comment_created_at' => $realDate?->toISOString(),
+            'comment_created_at' => ($realDate && $realDate->year >= 2000) ? $realDate->toISOString() : ($this->created_at?->toISOString() ?: now()->toISOString()),
             'date' => $realDate ? $realDate->format('Y-m-d') : 'الآن',
             'time' => $time12,
             'formatted_date' => $formattedDate,

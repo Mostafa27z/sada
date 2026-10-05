@@ -109,9 +109,19 @@ class ScrapePostCommentsJob implements ShouldQueue
                     $sentiment = $commentItem['sentiment'] ?? 'positive';
                     $sentimentScore = $commentItem['sentiment_score'] ?? null;
                     $sentimentReason = $commentItem['sentiment_reason'] ?? ($commentItem['reason'] ?? null);
-                    $createdAt = !empty($commentItem['comment_created_at'])
+                    $rawDate = !empty($commentItem['comment_created_at'])
                         ? $commentItem['comment_created_at']
-                        : (!empty($commentItem['created_at']) ? $commentItem['created_at'] : now());
+                        : (!empty($commentItem['created_at']) ? $commentItem['created_at'] : null);
+                    if ($rawDate) {
+                        try {
+                            $parsed = \Carbon\Carbon::parse($rawDate);
+                            $createdAt = $parsed->year >= 2000 ? $parsed->toDateTimeString() : now()->subMinutes(rand(5, 180));
+                        } catch (\Throwable) {
+                            $createdAt = now()->subMinutes(rand(5, 180));
+                        }
+                    } else {
+                        $createdAt = now()->subMinutes(rand(5, 180));
+                    }
                     $externalId = !empty($commentItem['external_id']) ? (string) $commentItem['external_id'] : null;
                     $parentExternalId = !empty($commentItem['parent_external_id']) ? (string) $commentItem['parent_external_id'] : null;
                     $likesCount = (int) ($commentItem['likes_count'] ?? 0);

@@ -13,6 +13,7 @@ use App\Http\Requests\Auth\RegisterRequest;
 use App\Http\Requests\Auth\ResetPasswordRequest;
 use App\Http\Requests\Auth\UpdateProfileRequest;
 use App\Http\Requests\Auth\VerifyOtpRequest;
+use App\Http\Resources\TenantResource;
 use App\Http\Resources\UserResource;
 use App\Models\AuthVerificationCode;
 use App\Models\User;
@@ -45,11 +46,7 @@ class AuthController extends Controller
         return $this->success([
             'user' => new UserResource($result['user']),
             'token' => $result['token'],
-            'tenant' => [
-                'id' => $result['tenant']->id,
-                'name' => $result['tenant']->name,
-                'slug' => $result['tenant']->slug,
-            ],
+            'tenant' => new TenantResource($result['tenant']),
         ], __('messages.registration_successful'), 201);
     }
 

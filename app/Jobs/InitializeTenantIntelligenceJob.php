@@ -173,6 +173,12 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
             // 5. Scrape REAL posts and populate both collections
             $this->scrapeAndSaveRealArticles($tenant, $brandCollection, $sectorCollection, $countryCode, $scraper);
         });
+        
+        try {
+            \App\Jobs\FetchTenantIndustryNewsJob::dispatch($this->tenantId);
+        } catch (\Throwable $e) {
+            Log::warning("Failed to dispatch FetchTenantIndustryNewsJob for tenant #{$this->tenantId}: " . $e->getMessage());
+        }
 
         Log::info("Automated Intelligence successfully seeded for Tenant #{$this->tenantId}");
     }
@@ -256,7 +262,24 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
             $sentiment = $post['sentiment'] ?? 'neutral';
             $score     = (float)($post['sentiment_score'] ?? 0.0);
             $timestamp = $post['timestamp'] ?? $post['created_at'] ?? null;
-            $publishedAt = $timestamp ? now()->setTimestamp((int)$timestamp) : now()->subHours(rand(1, 48));
+            if ($timestamp) {
+                if (is_numeric($timestamp)) {
+                    $sec = (int)$timestamp;
+                    if ($sec > 9999999999) {
+                        $sec = (int)($sec / 1000);
+                    }
+                    $publishedAt = $sec > 946684800 ? \Carbon\Carbon::createFromTimestamp($sec) : now()->subHours(rand(1, 48));
+                } else {
+                    try {
+                        $parsed = \Carbon\Carbon::parse($timestamp);
+                        $publishedAt = $parsed->year >= 2000 ? $parsed : now()->subHours(rand(1, 48));
+                    } catch (\Throwable) {
+                        $publishedAt = now()->subHours(rand(1, 48));
+                    }
+                }
+            } else {
+                $publishedAt = now()->subHours(rand(1, 48));
+            }
 
             if (empty($text)) continue;
 

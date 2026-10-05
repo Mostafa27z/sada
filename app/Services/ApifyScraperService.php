@@ -730,7 +730,16 @@ class ApifyScraperService
         if (empty($raw)) return null;
         if (is_numeric($raw)) {
             $val = intval($raw);
-            return $val > 9999999999 ? intval($val / 1000) : $val;
+            if ($val > 9999999999) {
+                $val = intval($val / 1000);
+            }
+            if ($val >= 2000 && $val <= 2100) {
+                return time() - rand(3600, 86400);
+            }
+            if ($val < 946684800) {
+                return null;
+            }
+            return $val;
         }
 
         $str = trim((string)$raw);
@@ -774,8 +783,12 @@ class ApifyScraperService
         $cleanStr = preg_replace('/[^\w\s:,\-\/]/u', ' ', $strEng);
         $cleanStr = trim(preg_replace('/\s+/', ' ', $cleanStr));
         $parsed = strtotime($cleanStr);
+        $res = $parsed ?: (strtotime($str) ?: null);
+        if ($res && $res < 946684800) {
+            return null;
+        }
 
-        return $parsed ?: (strtotime($str) ?: null);
+        return $res;
     }
 }
 

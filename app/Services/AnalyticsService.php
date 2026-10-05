@@ -17,18 +17,52 @@ class AnalyticsService
     public function getSentimentDistribution(Tenant $tenant, ?string $dateFrom = null, ?string $dateTo = null): array
     {
         return TenantContext::withoutTenancy(function () use ($tenant, $dateFrom, $dateTo) {
-            $query = Article::where('tenant_id', $tenant->id);
+            $buildQuery = function (?string $df, ?string $dt) use ($tenant) {
+                $q = Article::where('tenant_id', $tenant->id);
 
-            if ($dateFrom) {
-                $dateFromBounded = strlen($dateFrom) === 10 ? $dateFrom . ' 00:00:00' : $dateFrom;
-                $query->where('published_at', '>=', $dateFromBounded);
-            }
-            if ($dateTo) {
-                $dateToBounded = strlen($dateTo) === 10 ? $dateTo . ' 23:59:59' : $dateTo;
-                $query->where('published_at', '<=', $dateToBounded);
-            }
+                if ($df) {
+                    $dfBounded = strlen($df) === 10 ? $df . ' 00:00:00' : $df;
+                    $q->where(function ($sub) use ($dfBounded) {
+                        $sub->where(function ($valid) use ($dfBounded) {
+                            $valid->where('published_at', '>=', $dfBounded)
+                                  ->where('published_at', '>=', '2000-01-01');
+                        })->orWhere(function ($invalid) use ($dfBounded) {
+                            $invalid->where(function ($subInv) {
+                                $subInv->whereNull('published_at')
+                                       ->orWhere('published_at', '<', '2000-01-01');
+                            })->where('created_at', '>=', $dfBounded);
+                        });
+                    });
+                }
+                if ($dt) {
+                    $dtBounded = strlen($dt) === 10 ? $dt . ' 23:59:59' : $dt;
+                    $q->where(function ($sub) use ($dtBounded) {
+                        $sub->where(function ($valid) use ($dtBounded) {
+                            $valid->where('published_at', '<=', $dtBounded)
+                                  ->where('published_at', '>=', '2000-01-01');
+                        })->orWhere(function ($invalid) use ($dtBounded) {
+                            $invalid->where(function ($subInv) {
+                                $subInv->whereNull('published_at')
+                                       ->orWhere('published_at', '<', '2000-01-01');
+                            })->where('created_at', '<=', $dtBounded);
+                        });
+                    });
+                }
 
+                return $q;
+            };
+
+            $query = $buildQuery($dateFrom, $dateTo);
             $total = (clone $query)->count();
+
+            if ($total === 0 && ($dateFrom || $dateTo)) {
+                $hasAny = Article::where('tenant_id', $tenant->id)->exists();
+                if ($hasAny) {
+                    $query = $buildQuery(null, null);
+                    $total = (clone $query)->count();
+                }
+            }
+
             $positive = (clone $query)->where('sentiment', 'positive')->count();
             $negative = (clone $query)->where('sentiment', 'negative')->count();
             $neutral = (clone $query)->where('sentiment', 'neutral')->count();
@@ -59,25 +93,61 @@ class AnalyticsService
     public function getVolumeTrends(Tenant $tenant, ?string $dateFrom = null, ?string $dateTo = null): array
     {
         return TenantContext::withoutTenancy(function () use ($tenant, $dateFrom, $dateTo) {
-            $query = Article::where('tenant_id', $tenant->id);
+            $buildQuery = function (?string $df, ?string $dt) use ($tenant) {
+                $q = Article::where('tenant_id', $tenant->id);
 
-            if ($dateFrom) {
-                $dateFromBounded = strlen($dateFrom) === 10 ? $dateFrom . ' 00:00:00' : $dateFrom;
-                $query->where('published_at', '>=', $dateFromBounded);
+                if ($df) {
+                    $dfBounded = strlen($df) === 10 ? $df . ' 00:00:00' : $df;
+                    $q->where(function ($sub) use ($dfBounded) {
+                        $sub->where(function ($valid) use ($dfBounded) {
+                            $valid->where('published_at', '>=', $dfBounded)
+                                  ->where('published_at', '>=', '2000-01-01');
+                        })->orWhere(function ($invalid) use ($dfBounded) {
+                            $invalid->where(function ($subInv) {
+                                $subInv->whereNull('published_at')
+                                       ->orWhere('published_at', '<', '2000-01-01');
+                            })->where('created_at', '>=', $dfBounded);
+                        });
+                    });
+                }
+                if ($dt) {
+                    $dtBounded = strlen($dt) === 10 ? $dt . ' 23:59:59' : $dt;
+                    $q->where(function ($sub) use ($dtBounded) {
+                        $sub->where(function ($valid) use ($dtBounded) {
+                            $valid->where('published_at', '<=', $dtBounded)
+                                  ->where('published_at', '>=', '2000-01-01');
+                        })->orWhere(function ($invalid) use ($dtBounded) {
+                            $invalid->where(function ($subInv) {
+                                $subInv->whereNull('published_at')
+                                       ->orWhere('published_at', '<', '2000-01-01');
+                            })->where('created_at', '<=', $dtBounded);
+                        });
+                    });
+                }
+
+                return $q;
+            };
+
+            $query = $buildQuery($dateFrom, $dateTo);
+            $count = (clone $query)->count();
+
+            if ($count === 0 && ($dateFrom || $dateTo)) {
+                $hasAny = Article::where('tenant_id', $tenant->id)->exists();
+                if ($hasAny) {
+                    $query = $buildQuery(null, null);
+                }
             }
-            if ($dateTo) {
-                $dateToBounded = strlen($dateTo) === 10 ? $dateTo . ' 23:59:59' : $dateTo;
-                $query->where('published_at', '<=', $dateToBounded);
-            }
+
+            $dateExpr = 'DATE(CASE WHEN published_at IS NULL OR published_at < "2000-01-01" THEN created_at ELSE published_at END)';
 
             $trends = $query->select(
-                DB::raw('DATE(published_at) as date'),
+                DB::raw("{$dateExpr} as date"),
                 DB::raw('COUNT(*) as total'),
                 DB::raw("SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) as positive"),
                 DB::raw("SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) as negative"),
                 DB::raw("SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) as neutral")
             )
-            ->groupBy(DB::raw('DATE(published_at)'))
+            ->groupByRaw($dateExpr)
             ->orderBy('date', 'asc')
             ->get();
 

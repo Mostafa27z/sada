@@ -129,9 +129,9 @@ class ScrapeKeywordsJob implements ShouldQueue
                         if (!$fromTs && $parsedTime && $parsedTime < $cutoffTime) {
                             continue;
                         }
-                        $createdAt = $parsedTime ? date('Y-m-d H:i:s', $parsedTime) : now();
+                        $createdAt = ($parsedTime && $parsedTime >= 946684800) ? date('Y-m-d H:i:s', $parsedTime) : now()->subHours(rand(1, 24));
                     } else {
-                        $createdAt = now();
+                        $createdAt = now()->subHours(rand(1, 24));
                     }
                 } else {
                     $lines = explode("\n", trim((string)$post));

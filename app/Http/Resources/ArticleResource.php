@@ -11,8 +11,19 @@ class ArticleResource extends JsonResource
     {
         $pubDate = $this->published_at ?: $this->created_at;
         if ($pubDate && is_string($pubDate)) {
-            $pubDate = \Carbon\Carbon::parse($pubDate);
+            try {
+                $pubDate = \Carbon\Carbon::parse($pubDate);
+            } catch (\Throwable) {
+                $pubDate = null;
+            }
         }
+        if ($pubDate && $pubDate->year < 2000) {
+            $pubDate = $this->created_at ? \Carbon\Carbon::parse($this->created_at) : null;
+            if (!$pubDate || $pubDate->year < 2000) {
+                $pubDate = now();
+            }
+        }
+
         $pubTime12 = '';
         $formattedDate = 'الآن';
         if ($pubDate) {
@@ -35,7 +46,7 @@ class ArticleResource extends JsonResource
             'language' => $this->language,
             'country' => $this->country,
             'category' => $this->category,
-            'published_at' => $this->published_at?->toISOString(),
+            'published_at' => ($pubDate && $pubDate->year >= 2000) ? $pubDate->toISOString() : ($this->created_at?->toISOString() ?: now()->toISOString()),
             'date' => $pubDate ? $pubDate->format('Y-m-d') : 'الآن',
             'time' => $pubTime12,
             'formatted_date' => $formattedDate,
