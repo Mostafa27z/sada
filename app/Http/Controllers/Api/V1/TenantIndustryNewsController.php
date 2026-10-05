@@ -18,7 +18,7 @@ class TenantIndustryNewsController extends Controller
     use ApiResponse;
 
     /**
-     * Get the latest/today's top 10 industry news with actionable suggestions.
+     * Get the latest/today's top industry news with actionable suggestions and pagination.
      */
     public function today(Request $request): JsonResponse
     {
@@ -29,35 +29,54 @@ class TenantIndustryNewsController extends Controller
 
         $todayKsa = Carbon::now('Asia/Riyadh')->toDateString();
 
-        // 1. Check if we have records for today
-        $news = TenantIndustryNews::where('tenant_id', $tenantId)
+        // 1. Determine target batch date
+        $targetDate = $todayKsa;
+        $hasToday = TenantIndustryNews::where('tenant_id', $tenantId)
             ->where('batch_date', $todayKsa)
-            ->orderBy('rank', 'asc')
-            ->get();
+            ->exists();
 
-        // 2. If not yet generated for today, fetch the most recent batch date
-        if ($news->isEmpty()) {
+        if (!$hasToday) {
             $latestDate = TenantIndustryNews::where('tenant_id', $tenantId)
                 ->max('batch_date');
-
             if ($latestDate) {
-                $news = TenantIndustryNews::where('tenant_id', $tenantId)
-                    ->where('batch_date', $latestDate)
-                    ->orderBy('rank', 'asc')
-                    ->get();
+                $targetDate = Carbon::parse($latestDate)->toDateString();
             }
         }
 
+        $baseQuery = TenantIndustryNews::where('tenant_id', $tenantId)
+            ->where('batch_date', $targetDate);
+
+        // Compute batch stats for header
+        $allBatchItems = (clone $baseQuery)->get();
+        $total = $allBatchItems->count();
+        $acted = $allBatchItems->where('status', 'acted')->count();
+        $dismissed = $allBatchItems->where('status', 'dismissed')->count();
+        $unread = $allBatchItems->where('status', 'unread')->count();
+        $highUrgencyCount = $allBatchItems->filter(function ($item) {
+            return data_get($item->suggested_actions, 'operational_action.urgency') === 'high';
+        })->count();
+
+        // Today's Top 10 items
+        $items = (clone $baseQuery)->orderBy('rank', 'asc')->limit(10)->get();
+
         return $this->success([
-            'batch_date' => $news->first()?->batch_date?->toDateString() ?? $todayKsa,
-            'is_today' => ($news->first()?->batch_date?->toDateString() === $todayKsa),
-            'count' => $news->count(),
-            'items' => $news,
+            'batch_date' => $targetDate,
+            'is_today' => ($targetDate === $todayKsa),
+            'count' => $items->count(),
+            'total' => $total,
+            'items' => $items,
+            'stats' => [
+                'total' => $total,
+                'acted' => $acted,
+                'unread' => $unread,
+                'dismissed' => $dismissed,
+                'highUrgencyCount' => $highUrgencyCount,
+            ],
         ], 'تم جلب رادار أخبار القطاع بنجاح');
     }
 
     /**
-     * List historical industry news digests by date or status.
+     * List historical industry news digests by date, status, search, or category with pagination.
      */
     public function index(Request $request): JsonResponse
     {
@@ -80,9 +99,22 @@ class TenantIndustryNewsController extends Controller
             $query->where('category', $request->query('category'));
         }
 
+        if ($request->filled('search')) {
+            $search = '%' . trim($request->query('search')) . '%';
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', $search)
+                  ->orWhere('summary', 'like', $search)
+                  ->orWhere('why_it_matters', 'like', $search)
+                  ->orWhere('source_name', 'like', $search);
+            });
+        }
+
+        $perPage = (int) $request->query('per_page', 9);
+        $page = (int) $request->query('page', 1);
+
         $news = $query->orderBy('batch_date', 'desc')
             ->orderBy('rank', 'asc')
-            ->paginate($request->query('per_page', 15));
+            ->paginate($perPage, ['*'], 'page', $page);
 
         return $this->success($news);
     }

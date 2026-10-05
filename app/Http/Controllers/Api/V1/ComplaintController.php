@@ -97,7 +97,7 @@ class ComplaintController extends Controller
         $latestComplaint = Complaint::where('tenant_id', $tenantId)->latest()->first();
 
         if (!$latestComplaint) {
-            return $this->error('No complaints recorded for this tenant yet', 400);
+            return $this->error('لا توجد شكاوى مسجلة لهذه المنشأة حتى الآن لتحليلها واستخراج التوصيات', 400);
         }
 
         $summary = $aiService->updateTenantSummary($tenant, $latestComplaint);

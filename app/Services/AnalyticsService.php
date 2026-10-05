@@ -138,20 +138,27 @@ class AnalyticsService
                 }
             }
 
-            $dateExpr = 'DATE(CASE WHEN published_at IS NULL OR published_at < "2000-01-01" THEN created_at ELSE published_at END)';
+            $articles = $query->select(['id', 'tenant_id', 'sentiment', 'published_at', 'created_at'])->get();
 
-            $trends = $query->select(
-                DB::raw("{$dateExpr} as date"),
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) as positive"),
-                DB::raw("SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) as negative"),
-                DB::raw("SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) as neutral")
-            )
-            ->groupByRaw($dateExpr)
-            ->orderBy('date', 'asc')
-            ->get();
+            $grouped = $articles->groupBy(function ($article) {
+                $dt = $article->published_at && $article->published_at->year >= 2000
+                    ? $article->published_at
+                    : $article->created_at;
+                return $dt ? $dt->format('Y-m-d') : date('Y-m-d');
+            })->sortKeys();
 
-            return $trends->toArray();
+            $trends = [];
+            foreach ($grouped as $date => $items) {
+                $trends[] = [
+                    'date' => (string) $date,
+                    'total' => $items->count(),
+                    'positive' => $items->where('sentiment', 'positive')->count(),
+                    'negative' => $items->where('sentiment', 'negative')->count(),
+                    'neutral' => $items->where('sentiment', 'neutral')->count(),
+                ];
+            }
+
+            return $trends;
         });
     }
 
