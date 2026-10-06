@@ -136,14 +136,14 @@ class AiScraperService
         // 2. Real Scraper via Apify Multi-Platform Search
         $apifyToken = config('services.apify.token') ?: env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2') ?: '';
         if (!empty($apifyToken)) {
-            $realResults = $this->scrapeKeywordsViaApify($keywords, $platforms, $countryCode, $apifyToken);
+            $realResults = $this->scrapeKeywordsViaApify($keywords, $platforms, $countryCode, $apifyToken, $dateFrom, $dateTo);
             if (!empty($realResults['posts_by_platform'])) {
                 return $realResults;
             }
         }
 
         // 3. Guaranteed Real News & Web Scraper via Google News RSS
-        return $this->scrapeKeywordsViaGoogleNews($keywords, $platforms, $countryCode);
+        return $this->scrapeKeywordsViaGoogleNews($keywords, $platforms, $countryCode, $dateFrom, $dateTo);
     }
 
     /**
@@ -365,7 +365,7 @@ class AiScraperService
     /**
      * Real scraping engine using Apify to retrieve authentic social media posts & web articles.
      */
-    protected function scrapeKeywordsViaApify(array $keywords, array $platforms, string $countryCode, string $token): array
+    protected function scrapeKeywordsViaApify(array $keywords, array $platforms, string $countryCode, string $token, ?string $dateFrom = null, ?string $dateTo = null): array
     {
         $targetKeywords = array_values(array_filter(array_map('trim', $keywords)));
         if (empty($targetKeywords)) {
@@ -404,11 +404,11 @@ class AiScraperService
 
         $input = [
             'queries' => implode("\n", array_unique($queries)),
-            'maxPagesPerQuery' => 1,
-            'resultsPerPage' => 10,
+            'maxPagesPerQuery' => 2,
+            'resultsPerPage' => 15,
             'countryCode' => $countryCodeLower ?: 'sa',
             'languageCode' => 'ar',
-            'customUrlParameters' => 'tbs=qdr:d', // Apify Google Search Scraper parameter for past 24 hours
+            'customUrlParameters' => 'tbs=qdr:m', // Allow up to month for comprehensive historical coverage
         ];
 
         $results = $this->runApifyActor('apify~google-search-scraper', $input, $token, 45);
@@ -477,8 +477,13 @@ class AiScraperService
 
                 // 2. Parse Google SERP result date if available
                 $tsVal = !empty($rawDate) ? $this->parseSocialTimestamp($rawDate) : null;
-                $cutoffTime = time() - (3 * 86400); // Strict 3-day freshness window for trends
+                $fromTs = $dateFrom ? strtotime($dateFrom . ' 00:00:00') : null;
+                $toTs = $dateTo ? strtotime($dateTo . ' 23:59:59') : null;
+                $cutoffTime = $fromTs ?: (time() - (30 * 86400));
                 if ($tsVal && $tsVal < $cutoffTime) {
+                    continue;
+                }
+                if ($tsVal && $toTs && $tsVal > $toTs) {
                     continue;
                 }
 
@@ -653,7 +658,7 @@ class AiScraperService
     /**
      * High-speed real news and social collection using Google News RSS across requested platforms.
      */
-    protected function scrapeKeywordsViaGoogleNews(array $keywords, array $platforms, string $countryCode): array
+    protected function scrapeKeywordsViaGoogleNews(array $keywords, array $platforms, string $countryCode, ?string $dateFrom = null, ?string $dateTo = null): array
     {
         $countryCodeUpper = strtoupper($countryCode ?: 'SA');
 
@@ -697,6 +702,19 @@ class AiScraperService
             $targetPlatforms = ['web'];
         }
 
+        $fromTs = $dateFrom ? strtotime($dateFrom . ' 00:00:00') : null;
+        $toTs = $dateTo ? strtotime($dateTo . ' 23:59:59') : null;
+        $now = time();
+
+        if ($fromTs) {
+            $daysDiff = max(1, ceil(($now - $fromTs) / 86400));
+            $whenClause = "when:" . min(365, (int)$daysDiff) . "d";
+            $maxAgeSeconds = ($now - $fromTs + 86400);
+        } else {
+            $whenClause = "when:30d";
+            $maxAgeSeconds = 86400 * 30;
+        }
+
         foreach ($keywords as $kw) {
             $primaryTerms = $this->extractPrimaryTerms($kw);
             $secondaryWords = $this->extractSecondaryWords($kw);
@@ -732,16 +750,14 @@ class AiScraperService
                     default => '',
                 };
 
-                // Query with primary term quoted and strictly when:1d (last 24-48 hours)
-                $searchQuery = trim("{$sitePrefix}{$primaryQuoted} when:1d");
+                // Query with primary term quoted and dynamic date range
+                $searchQuery = trim("{$sitePrefix}{$primaryQuoted} {$whenClause}");
                 $rssUrl = "https://news.google.com/rss/search?q=" . urlencode($searchQuery) . "&hl=ar&gl={$glCode}&ceid={$ceid}";
                 $content = @file_get_contents($rssUrl);
 
                 $xml = $content ? @simplexml_load_string($content) : null;
                 $items = ($xml && isset($xml->channel->item)) ? $xml->channel->item : [];
 
-                $now = time();
-                $maxAgeSeconds = 86400 * 2; // Strict 48h max age (today and yesterday only)
                 $candidateItems = [];
 
                 foreach ($items as $item) {
@@ -756,8 +772,14 @@ class AiScraperService
                     $parsedPub = !empty($pubDate) ? $this->parseSocialTimestamp($pubDate) : null;
                     $timestamp = ($parsedPub && $parsedPub >= 946684800) ? $parsedPub : $now;
 
-                    // 1. Strict Date Check: Reject articles older than 48 hours
-                    if (($now - $timestamp) > $maxAgeSeconds) {
+                    // 1. Dynamic Date Check: Respect requested date range or 30-day window
+                    if ($fromTs && $timestamp < $fromTs) {
+                        continue;
+                    }
+                    if ($toTs && $timestamp > $toTs) {
+                        continue;
+                    }
+                    if (!$fromTs && ($now - $timestamp) > $maxAgeSeconds) {
                         continue;
                     }
                     if ($timestamp > ($now + 86400)) {
