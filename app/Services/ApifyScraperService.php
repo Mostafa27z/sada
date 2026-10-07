@@ -88,21 +88,85 @@ class ApifyScraperService
 
     // ==================== KEYWORD SCRAPERS ====================
 
+    public function formatReachMetric(int $views): ?string
+    {
+        if ($views >= 1000000) {
+            return round($views / 1000000, 1) . 'M';
+        }
+        if ($views >= 1000) {
+            $val = round($views / 1000, 1);
+            return ($val == intval($val) ? intval($val) : $val) . 'K';
+        }
+        if ($views > 0) {
+            return (string) $views;
+        }
+        return null;
+    }
+
+    public function fetchTwitterPostMetrics(string $url): ?array
+    {
+        if (!preg_match('/(?:twitter|x)\.com\/([^\/]+)\/status\/(\d+)/i', $url, $m)) {
+            return null;
+        }
+
+        $username = $m[1];
+        $tweetId = $m[2];
+
+        try {
+            $res = Http::withoutVerifying()
+                ->withHeaders(['User-Agent' => 'TelegramBot (like TwitterBot)'])
+                ->timeout(5)
+                ->get("https://api.fxtwitter.com/{$username}/status/{$tweetId}");
+
+            if ($res->successful()) {
+                $data = $res->json()['tweet'] ?? [];
+                if (!empty($data)) {
+                    $likes = (int) ($data['likes'] ?? 0);
+                    $views = (int) ($data['views'] ?? 0);
+                    $retweets = (int) ($data['retweets'] ?? 0);
+                    $replies = (int) ($data['replies'] ?? 0);
+
+                    $reach = $this->formatReachMetric($views);
+                    $engagement = $likes > 0 ? (string) $likes : ($likes + $retweets + $replies > 0 ? (string) ($likes + $retweets + $replies) : null);
+
+                    return [
+                        'likes' => $likes,
+                        'views' => $views,
+                        'retweets' => $retweets,
+                        'replies' => $replies,
+                        'reach' => $reach,
+                        'engagement' => $engagement,
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning("fetchTwitterPostMetrics failed for {$url}: " . $e->getMessage());
+        }
+
+        return null;
+    }
+
     public function fetchXByKeywords(array $keywords, int $maxItems = 10, ?string $country = null, ?string $dateFrom = null, ?string $dateTo = null): array
     {
-        $sinceClause = $dateFrom ? "since:{$dateFrom}" : "since:" . date('Y-m-d', strtotime('-2 days'));
+        $sinceClause = $dateFrom ? "since:{$dateFrom}" : "";
         $untilClause = $dateTo ? " until:{$dateTo}" : "";
+
+        $targetedQueries = \App\Support\KeywordRelevanceFilter::generateTargetedSearchQueries($keywords);
+        if (empty($targetedQueries)) {
+            $targetedQueries = $keywords;
+        }
 
         $queryKeywords = array_map(function($kw) use ($country, $sinceClause, $untilClause) {
             $kw = trim($kw);
             if (str_contains($kw, ' ') && !str_starts_with($kw, '"') && !str_starts_with($kw, '#')) {
                 $kw = "\"{$kw}\"";
             }
-            return "{$kw} {$sinceClause}{$untilClause}";
-        }, $keywords);
+            $parts = array_filter([$kw, $sinceClause, $untilClause]);
+            return implode(' ', $parts);
+        }, $targetedQueries);
 
         $input = [
-            "keywords" => $queryKeywords,
+            "keywords" => array_slice($queryKeywords, 0, 10),
             "maxItemsPerKeyword" => $maxItems,
             "sortBy" => "latest",
             "outputFormat" => "json",
@@ -112,11 +176,12 @@ class ApifyScraperService
         $items = $this->runActorAndFetchItems("8CiMefkv2yLlD7vYl", $input);
         $results = [];
 
-        $fromTs = $dateFrom ? strtotime($dateFrom . ' 00:00:00') : (time() - (48 * 3600));
+        $fromTs = $dateFrom ? strtotime($dateFrom . ' 00:00:00') : null;
         $toTs = $dateTo ? strtotime($dateTo . ' 23:59:59') : null;
 
         foreach ($items as $item) {
             $postId = (string)($item['id'] ?? $item['tweet_id'] ?? md5(json_encode($item)));
+            $username = $item['author_username'] ?? $item['username'] ?? 'x';
             $author = $item['author_name'] ?? $item['username'] ?? '';
             if (empty(trim($author)) || strtolower($author) === 'unknown' || strtolower($author) === 'unknown user') {
                 $author = !empty($username) && $username !== 'x' ? "@{$username}" : 'مغرد في X';
@@ -125,8 +190,13 @@ class ApifyScraperService
             if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
                 continue; // Skip tweets without meaningful content
             }
+
+            // Strict Relevance Check: Discard tweets that do not mention the monitored target entity
+            if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($text . ' ' . $author, $keywords)) {
+                continue;
+            }
+
             $rawCreatedAt = $item['created_at'] ?? $item['date'] ?? '';
-            $username = $item['author_username'] ?? $item['username'] ?? 'x';
             $url = $item['url'] ?? $item['tweet_url'] ?? "https://x.com/{$username}/status/{$postId}";
 
             $tsVal = $this->parseSocialTimestamp($rawCreatedAt);
@@ -152,6 +222,59 @@ class ApifyScraperService
                 $matchedKw = trim($keywords[0] ?? '');
             }
 
+            // Extract genuine platform interaction metrics
+            $views = (int) (
+                $item['views']
+                ?? $item['view_count']
+                ?? $item['viewCount']
+                ?? $item['views_count']
+                ?? $item['viewsCount']
+                ?? $item['impression_count']
+                ?? $item['impressionCount']
+                ?? ($item['public_metrics']['impression_count'] ?? 0)
+            );
+
+            $likes = (int) (
+                $item['likes']
+                ?? $item['like_count']
+                ?? $item['likeCount']
+                ?? $item['likes_count']
+                ?? $item['likesCount']
+                ?? $item['favorite_count']
+                ?? $item['favoriteCount']
+                ?? ($item['public_metrics']['like_count'] ?? 0)
+            );
+
+            $retweets = (int) (
+                $item['retweets']
+                ?? $item['retweet_count']
+                ?? $item['retweetCount']
+                ?? $item['reposts']
+                ?? $item['repost_count']
+                ?? ($item['public_metrics']['retweet_count'] ?? 0)
+            );
+
+            $replies = (int) (
+                $item['replies']
+                ?? $item['reply_count']
+                ?? $item['replyCount']
+                ?? ($item['public_metrics']['reply_count'] ?? 0)
+            );
+
+            // If metrics are 0 and valid tweet URL exists, fetch live metrics
+            if ($views === 0 && $likes === 0 && !empty($url)) {
+                $liveMetrics = $this->fetchTwitterPostMetrics($url);
+                if ($liveMetrics) {
+                    $views = $liveMetrics['views'] ?? $views;
+                    $likes = $liveMetrics['likes'] ?? $likes;
+                    $retweets = $liveMetrics['retweets'] ?? $retweets;
+                    $replies = $liveMetrics['replies'] ?? $replies;
+                }
+            }
+
+            $reach = $this->formatReachMetric($views);
+            $engagement = $likes > 0 ? (string) $likes : ($likes + $retweets + $replies > 0 ? (string) ($likes + $retweets + $replies) : null);
+
             $results[] = [
                 "keyword" => $matchedKw,
                 "post_id" => $postId,
@@ -161,7 +284,13 @@ class ApifyScraperService
                 "url" => $url,
                 "created_at" => $createdAt,
                 "platform" => "x",
-                "country" => $country ?? "SA"
+                "country" => $country ?? "SA",
+                "views" => $views,
+                "likes" => $likes,
+                "retweets" => $retweets,
+                "replies" => $replies,
+                "reach" => $reach,
+                "engagement" => $engagement,
             ];
 
             if (count($results) >= $maxItems) {
@@ -174,8 +303,13 @@ class ApifyScraperService
 
     public function fetchInstagramByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
+        $targetedQueries = \App\Support\KeywordRelevanceFilter::generateTargetedSearchQueries($keywords);
+        if (empty($targetedQueries)) {
+            $targetedQueries = $keywords;
+        }
+
         $input = [
-            "keywords" => $keywords,
+            "keywords" => array_slice($targetedQueries, 0, 8),
             "getStories" => false,
             "maxItems" => max(20, $maxItems * 2),
             "customMapFunction" => "(object) => { return {...object} }",
@@ -194,6 +328,12 @@ class ApifyScraperService
             if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
                 continue; // Strictly skip posts without caption/text
             }
+
+            // Strict Relevance Check: Discard posts unrelated to monitored entity
+            if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($text . ' ' . $username, $keywords)) {
+                continue;
+            }
+
             $createdAt = $item['createdAt'] ?? '';
             $shortCode = $item['shortCode'] ?? $item['id'] ?? md5(json_encode($item));
             $postId = (string)($item['id'] ?? $shortCode);
@@ -204,6 +344,12 @@ class ApifyScraperService
                 continue;
             }
 
+            $likes = (int) ($item['likesCount'] ?? $item['like_count'] ?? $item['likes'] ?? 0);
+            $comments = (int) ($item['commentsCount'] ?? $item['comment_count'] ?? $item['comments'] ?? 0);
+            $views = (int) ($item['videoViewCount'] ?? $item['videoPlayCount'] ?? $item['viewsCount'] ?? $item['views'] ?? 0);
+            $reach = $this->formatReachMetric($views);
+            $engagement = $likes > 0 ? (string) $likes : ($comments > 0 ? (string) $comments : null);
+
             $results[] = [
                 "post_id" => $postId,
                 "external_id" => "insta_{$postId}",
@@ -212,7 +358,11 @@ class ApifyScraperService
                 "url" => $url,
                 "created_at" => $createdAt,
                 "platform" => "instagram",
-                "country" => $country ?? "SA"
+                "country" => $country ?? "SA",
+                "views" => $views,
+                "likes" => $likes,
+                "reach" => $reach,
+                "engagement" => $engagement,
             ];
 
             if (count($results) >= $maxItems) {
@@ -225,9 +375,14 @@ class ApifyScraperService
 
     public function fetchTiktokByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
+        $targetedQueries = \App\Support\KeywordRelevanceFilter::generateTargetedSearchQueries($keywords);
+        if (empty($targetedQueries)) {
+            $targetedQueries = $keywords;
+        }
+
         $input = [
             "maxItems" => max(25, $maxItems * 2),
-            "keywords" => $keywords,
+            "keywords" => array_slice($targetedQueries, 0, 8),
             "dateRange" => "THIS_MONTH",
             "sortType" => "DATE_POSTED",
             "customMapFunction" => "(object) => { return {...object} }",
@@ -247,6 +402,12 @@ class ApifyScraperService
             if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
                 continue; // Strictly skip videos without text/title
             }
+
+            // Strict Relevance Check: Discard videos unrelated to monitored entity
+            if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($text . ' ' . $username, $keywords)) {
+                continue;
+            }
+
             $createdAt = $item['uploadedAtFormatted'] ?? $item['createTime'] ?? '';
             $videoId = (string)($item['id'] ?? $item['videoId'] ?? md5(json_encode($item)));
             $url = $item['webVideoUrl'] ?? $item['url'] ?? "https://www.tiktok.com/@{$username}/video/{$videoId}";
@@ -269,6 +430,12 @@ class ApifyScraperService
                 continue;
             }
 
+            $views = (int) ($item['playCount'] ?? $item['views'] ?? $item['view_count'] ?? 0);
+            $likes = (int) ($item['diggCount'] ?? $item['likes'] ?? $item['like_count'] ?? 0);
+            $comments = (int) ($item['commentCount'] ?? $item['comments'] ?? 0);
+            $reach = $this->formatReachMetric($views);
+            $engagement = $likes > 0 ? (string) $likes : ($likes + $comments > 0 ? (string) ($likes + $comments) : null);
+
             $results[] = [
                 "post_id" => $videoId,
                 "external_id" => "tiktok_{$videoId}",
@@ -277,7 +444,11 @@ class ApifyScraperService
                 "url" => $url,
                 "created_at" => $tsVal ? date('Y-m-d H:i:s', $tsVal) : ($createdAt ?: date('Y-m-d H:i:s')),
                 "platform" => "tiktok",
-                "country" => $country ?? "SA"
+                "country" => $country ?? "SA",
+                "views" => $views,
+                "likes" => $likes,
+                "reach" => $reach,
+                "engagement" => $engagement,
             ];
 
             if (count($results) >= $maxItems) {
@@ -295,15 +466,18 @@ class ApifyScraperService
     public function fetchFacebookByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
         $allResults = [];
-        $cleanKeywords = array_values(array_filter(array_map('trim', $keywords)));
-        if (empty($cleanKeywords)) {
+        $targetedQueries = \App\Support\KeywordRelevanceFilter::generateTargetedSearchQueries($keywords);
+        if (empty($targetedQueries)) {
+            $targetedQueries = array_values(array_filter(array_map('trim', $keywords)));
+        }
+        if (empty($targetedQueries)) {
             return [];
         }
 
         $cutoffTime = time() - (7 * 86400); // 7-day freshness cutoff
-        $perKwLimit = max(5, intval(ceil($maxItems / count($cleanKeywords))));
+        $perKwLimit = max(5, intval(ceil($maxItems / count($targetedQueries))));
 
-        foreach ($cleanKeywords as $kw) {
+        foreach (array_slice($targetedQueries, 0, 6) as $kw) {
             $input = [
                 "query" => $kw,
                 "resultsCount" => max(10, $perKwLimit * 2),
@@ -327,6 +501,12 @@ class ApifyScraperService
                 if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
                     continue; // Skip posts without text
                 }
+
+                // Strict Relevance Check: Discard posts unrelated to monitored entity
+                if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($text . ' ' . $author, $keywords)) {
+                    continue;
+                }
+
                 $postId = (string)($item['postId'] ?? $item['id'] ?? md5($text));
                 $url = $item['url'] ?? $item['postUrl'] ?? "https://www.facebook.com/{$postId}";
                 $rawTs = $item['timestamp'] ?? $item['time'] ?? $item['date'] ?? null;
@@ -338,6 +518,12 @@ class ApifyScraperService
 
                 $createdAt = $tsVal ? date('Y-m-d H:i:s', $tsVal) : date('Y-m-d H:i:s');
 
+                $likes = (int) ($item['likes'] ?? $item['reactionsCount'] ?? $item['likesCount'] ?? 0);
+                $comments = (int) ($item['comments'] ?? $item['commentsCount'] ?? 0);
+                $views = (int) ($item['views'] ?? $item['viewCount'] ?? 0);
+                $reach = $this->formatReachMetric($views);
+                $engagement = $likes > 0 ? (string) $likes : ($likes + $comments > 0 ? (string) ($likes + $comments) : null);
+
                 $allResults[] = [
                     "keyword" => $kw,
                     "post_id" => $postId,
@@ -347,7 +533,11 @@ class ApifyScraperService
                     "url" => $url,
                     "created_at" => $createdAt,
                     "platform" => "facebook",
-                    "country" => $country ?? "SA"
+                    "country" => $country ?? "SA",
+                    "views" => $views,
+                    "likes" => $likes,
+                    "reach" => $reach,
+                    "engagement" => $engagement,
                 ];
 
                 $kwCount++;

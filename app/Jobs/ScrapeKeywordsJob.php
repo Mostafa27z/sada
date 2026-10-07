@@ -97,17 +97,28 @@ class ScrapeKeywordsJob implements ShouldQueue
                         continue;
                     }
 
+                    // Discard posts flagged as irrelevant by AI
+                    if (isset($post['is_relevant']) && $post['is_relevant'] === false) {
+                        continue;
+                    }
+
+                    $rawAuthor = trim($post['author'] ?? '');
+                    $rawTitle = trim($post['title'] ?? '');
+
+                    // Strict Keyword Relevance Check
+                    if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($content . ' ' . $rawTitle . ' ' . $rawAuthor, $this->keywords)) {
+                        continue;
+                    }
+
                     $postId = $post['post_id'] ?? null;
                     $externalId = $post['external_id'] ?? ($postId ? "{$platformName}_{$postId}" : 'ext_' . md5(json_encode($post)));
                     
-                    $rawAuthor = trim($post['author'] ?? '');
                     if (empty($rawAuthor) || strtolower($rawAuthor) === 'unknown') {
                         $author = $platformName === 'web' ? 'مصدر إخباري' : 'مستخدم ' . ucfirst($platformName);
                     } else {
                         $author = mb_substr($rawAuthor, 0, 250);
                     }
 
-                    $rawTitle = trim($post['title'] ?? '');
                     if (empty($rawTitle) || strtolower($rawTitle) === 'unknown') {
                         $title = mb_substr($content, 0, 200);
                     } else {
@@ -181,6 +192,10 @@ class ScrapeKeywordsJob implements ShouldQueue
                         'platform' => $platformName,
                         'reach' => (is_array($post) ? ($post['reach'] ?? null) : null),
                         'engagement' => (is_array($post) ? ($post['engagement'] ?? null) : null),
+                        'views' => (is_array($post) ? ($post['views'] ?? null) : null),
+                        'likes' => (is_array($post) ? ($post['likes'] ?? null) : null),
+                        'retweets' => (is_array($post) ? ($post['retweets'] ?? null) : null),
+                        'replies' => (is_array($post) ? ($post['replies'] ?? null) : null),
                         'raw_post' => $post,
                         'sentiment_reason' => is_array($post) ? ($post['sentiment_reason'] ?? null) : null,
                         'analytics' => $result['analytics'] ?? [],
@@ -211,9 +226,7 @@ class ScrapeKeywordsJob implements ShouldQueue
         if ($this->collectionId) {
             $colRecord = Collection::withoutGlobalScopes()->find($this->collectionId);
             if ($colRecord) {
-                if (!empty($syncedArticleIds)) {
-                    $colRecord->articles()->sync($syncedArticleIds);
-                }
+                $colRecord->articles()->sync($syncedArticleIds);
                 $colRecord->update([
                     'status' => Collection::STATUS_COMPLETED,
                     'error_message' => null,

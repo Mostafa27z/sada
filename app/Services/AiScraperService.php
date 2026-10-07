@@ -62,37 +62,59 @@ class AiScraperService
 
                 $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
 
+                // 1. Rule-based strict relevance filtering before AI
+                $allPosts = array_values(array_filter($allPosts, function($p) use ($keywords) {
+                    $txt = ($p['text'] ?? '') . ' ' . ($p['title'] ?? '') . ' ' . ($p['author'] ?? '');
+                    return \App\Support\KeywordRelevanceFilter::isContentRelevant($txt, $keywords);
+                }));
+
                 if (!empty($allPosts)) {
-                    // Classify individual sentiments for each post via Gemini using rubric
+                    // Classify individual sentiments and verify subject relevance for each post via Gemini
                     $sentimentMap = [];
                     try {
-                        $sentimentMap = $this->geminiService->classifyPostsSentiment($allPosts, $rubric);
+                        $sentimentMap = $this->geminiService->classifyPostsSentiment($allPosts, $rubric, $keywords);
                     } catch (\Throwable $geminiErr) {
                         Log::warning("Gemini classifyPostsSentiment error: " . $geminiErr->getMessage());
                     }
 
-                    $enrichSentiment = function(&$postList) use ($sentimentMap, $rubric) {
-                        foreach ($postList as &$post) {
+                    // 2. Discard posts flagged as irrelevant by AI
+                    $allPosts = array_values(array_filter($allPosts, function($post) use ($sentimentMap) {
+                        $key = $post['post_id'] ?? $post['external_id'] ?? null;
+                        if ($key && isset($sentimentMap[(string)$key])) {
+                            return $sentimentMap[(string)$key]['is_relevant'] !== false;
+                        }
+                        return true;
+                    }));
+
+                    $enrichSentiment = function(&$postList) use ($sentimentMap, $rubric, $keywords) {
+                        $filtered = [];
+                        foreach ($postList as $post) {
                             $key = $post['post_id'] ?? $post['external_id'] ?? null;
                             if ($key && isset($sentimentMap[(string)$key])) {
+                                if ($sentimentMap[(string)$key]['is_relevant'] === false) {
+                                    continue; // Drop irrelevant post
+                                }
                                 $post['sentiment'] = $sentimentMap[(string)$key]['sentiment'];
                                 $post['sentiment_score'] = $sentimentMap[(string)$key]['sentiment_score'];
                                 $post['sentiment_reason'] = $sentimentMap[(string)$key]['reason'] ?? null;
                             } else {
-                                $fbData = $this->classifyArabicSentiment($post['text'] ?? '', $rubric);
+                                $fbData = $this->classifyArabicSentiment(($post['text'] ?? '') . ' ' . ($post['title'] ?? ''), $rubric, $keywords);
                                 $post['sentiment'] = $fbData['sentiment'];
                                 $post['sentiment_score'] = $fbData['score'] ?? 0.8;
                                 $post['sentiment_reason'] = $fbData['reason'] ?? null;
                             }
+                            $filtered[] = $post;
                         }
-                        unset($post);
+                        $postList = $filtered;
                     };
 
                     $enrichSentiment($instaPosts);
                     $enrichSentiment($fbPosts);
                     $enrichSentiment($xPosts);
                     $enrichSentiment($tiktokPosts);
-                    $enrichSentiment($allPosts);
+
+                    // Re-merge only verified relevant posts
+                    $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
 
                     $analyticsJson = $this->geminiService->analyzeSentiment($instaPosts, $fbPosts, $xPosts, $tiktokPosts, $rubric);
 
@@ -191,58 +213,12 @@ class AiScraperService
      */
     protected function extractPrimaryTerms(string $keyword): array
     {
+        $anchors = \App\Support\KeywordRelevanceFilter::extractValidationAnchors($keyword);
+        if (!empty($anchors['phrases'])) {
+            return $anchors['phrases'];
+        }
         $clean = trim($keyword, " \t\n\r\0\x0B\"'");
-        // Strip leading '#' and normalize underscores from hashtags
-        $normalized = preg_replace('/^#+/u', '', $clean);
-        $normalized = str_replace('_', ' ', $normalized);
-
-        $stopWords = [
-            'آراء', 'رأي', 'اراء', 'حول', 'عن', 'في', 'تجربة', 'تجارب', 'أخبار', 'اخبار', 'خبر',
-            'رصد', 'تفاصيل', 'قصة', 'حقيقة', 'موضوع', 'استطلاع', 'بشأن', 'ضد', 'مع', 'على',
-            'من', 'إلى', 'الى', 'مراجعة', 'تقييم', 'شرح', 'نتائج', 'أحدث', 'احدث', 'عاجل'
-        ];
-
-        $genericPrefixes = [
-            'شركة', 'مؤسسة', 'مصنع', 'مطعم', 'محل', 'متجر', 'سوبرماركت', 'هايبرماركت', 
-            'وكالة', 'مكتب', 'بنك', 'مستشفى', 'فندق', 'مدارس', 'جامعة', 'جريدة', 
-            'صحيفة', 'قناة', 'جمعية', 'وزارة', 'هيئة', 'منظمة', 'مركز', 'محافظة', 'مدينة', 'منطقة', 'حي',
-            'company', 'agency', 'store', 'shop', 'restaurant', 'bank', 'hotel', 'hospital'
-        ];
-
-        if (preg_match('/\s*[-\/|,]\s+/u', $normalized)) {
-            return array_values(array_filter(array_map('trim', preg_split('/\s*[-\/|,]\s+/u', $normalized))));
-        }
-
-        $words = array_values(array_filter(explode(' ', $normalized)));
-        if (count($words) <= 1) {
-            $w = $words[0] ?? $normalized;
-            return !empty($w) ? [$w] : [$normalized];
-        }
-
-        // Extract core entity words (excluding stop words & generic prefixes)
-        $coreWords = array_values(array_filter($words, fn($w) => 
-            !in_array(mb_strtolower($w), $stopWords) && 
-            !in_array(mb_strtolower($w), $genericPrefixes)
-        ));
-
-        $terms = [];
-        // 1. Core entity phrase or individual core words
-        if (!empty($coreWords)) {
-            $terms[] = implode(' ', $coreWords);
-            foreach ($coreWords as $cw) {
-                if (mb_strlen($cw) >= 2 && !in_array($cw, $terms)) {
-                    $terms[] = $cw;
-                }
-            }
-        }
-
-        // 2. Full normalized phrase
-        $fullPhrase = implode(' ', $words);
-        if (!in_array($fullPhrase, $terms)) {
-            $terms[] = $fullPhrase;
-        }
-
-        return array_values(array_unique($terms));
+        return !empty($clean) ? [$clean] : [];
     }
 
     /**
@@ -288,6 +264,98 @@ class AiScraperService
     /**
      * Sanitize keyword query to avoid Google negation operators and split bilingual keywords.
      */
+    /**
+     * Build optimal, natural search query for Google News / Serper / Web scrapers.
+     * Prevents over-quoting long sentences while keeping entity precision high.
+     */
+    public function buildOptimalSearchQuery(string $keyword): string
+    {
+        $clean = trim($keyword, " \t\n\r\0\x0B\"'");
+        if (empty($clean)) return '';
+
+        // If explicit delimiter (e.g. "A | B")
+        if (preg_match('/\s+[-\/|,]\s+/u', $clean)) {
+            $parts = preg_split('/\s+[-\/|,]\s+/u', $clean);
+            $tokens = [];
+            foreach ($parts as $p) {
+                $p = trim($p, " \t\n\r\0\x0B\"'");
+                if (mb_strlen($p) >= 2) {
+                    $tokens[] = "\"{$p}\"";
+                }
+            }
+            if (!empty($tokens)) {
+                return count($tokens) > 1 ? '(' . implode(' OR ', $tokens) . ')' : $tokens[0];
+            }
+        }
+
+        $anchors = \App\Support\KeywordRelevanceFilter::extractValidationAnchors($clean);
+
+        // Check if a person name was detected:
+        $personShort = null;
+        $personFull = null;
+        $contextTerm = null;
+
+        foreach ($anchors['phrases'] as $phrase) {
+            if (preg_match('/(?:^|\s)(?:[\p{L}]+)\s+(?:بن|ابن)\s+(?:عبد\s+الله|عبدالله|[\p{L}]+)\s+([\p{L}]+)/u', $phrase)) {
+                $personFull = $phrase;
+                break;
+            }
+        }
+
+        foreach ($anchors['pairs'] as $pair) {
+            if (count($pair) === 2 && str_contains($pair[0], ' ')) {
+                $personShort = $pair[0];
+                $candidate = $pair[1];
+                if (\App\Support\KeywordRelevanceFilter::isCommonRegion($candidate)) {
+                    $contextTerm = $candidate;
+                    break;
+                }
+                if (!$contextTerm && !str_contains($candidate, ' ') && !\App\Support\KeywordRelevanceFilter::isGenericToken($candidate)) {
+                    $contextTerm = preg_replace('/^[لوكب]/u', '', $candidate);
+                }
+            }
+        }
+
+        if (!$personShort && !empty($anchors['phrases'])) {
+            foreach ($anchors['phrases'] as $p) {
+                $words = explode(' ', $p);
+                if (count($words) === 2 && !\App\Support\KeywordRelevanceFilter::isGenericToken($words[0]) && !\App\Support\KeywordRelevanceFilter::isGenericToken($words[1])) {
+                    $personShort = $p;
+                    break;
+                }
+            }
+        }
+
+        if ($personShort) {
+            if ($contextTerm) {
+                return "\"{$personShort}\" {$contextTerm}";
+            }
+            if ($personFull) {
+                return "(\"{$personShort}\" OR \"{$personFull}\")";
+            }
+            return "\"{$personShort}\"";
+        }
+
+        // If specific org/entity phrases exist (<= 3 words)
+        if (!empty($anchors['phrases'])) {
+            $firstPhrase = $anchors['phrases'][0];
+            $words = explode(' ', $firstPhrase);
+            if (count($words) <= 3) {
+                return "\"{$firstPhrase}\"";
+            }
+        }
+
+        $words = array_values(array_filter(explode(' ', $clean)));
+        if (count($words) <= 3) {
+            return "\"{$clean}\"";
+        }
+
+        return $clean;
+    }
+
+    /**
+     * Sanitize keyword query to avoid Google negation operators and split bilingual keywords.
+     */
     protected function sanitizeKeywordQuery(string $keyword): string
     {
         $kw = trim($keyword, " \t\n\r\0\x0B\"'");
@@ -307,6 +375,11 @@ class AiScraperService
             if (count($tokens) > 1) {
                 return '(' . implode(' OR ', $tokens) . ')';
             }
+        }
+
+        $optimal = $this->buildOptimalSearchQuery($keyword);
+        if (!empty($optimal)) {
+            return $optimal;
         }
 
         $primaryTerms = $this->extractPrimaryTerms($keyword);
@@ -494,30 +567,29 @@ class AiScraperService
 
                 $content = !empty($rawDesc) ? $rawDesc : $cleanTitle;
 
+                // Strict Relevance Check: Discard posts unrelated to target keywords
+                if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($content . ' ' . $cleanTitle, $targetKeywords)) {
+                    continue;
+                }
+
                 // Extract authentic clean author / publisher
                 $author = $this->extractAuthorFromSearchResult($r, $platformKey);
 
-                // Analyze real Arabic sentiment
-                $sentimentData = $this->classifyArabicSentiment($content . ' ' . $cleanTitle);
+                // Analyze real Arabic sentiment from the perspective of monitored keywords
+                $sentimentData = $this->classifyArabicSentiment($content . ' ' . $cleanTitle, null, $targetKeywords);
                 $sentiment = $sentimentData['sentiment'];
                 $sentimentCounts[$sentiment]++;
 
-                // Calculate realistic reach & engagement metrics based on platform and rank
-                $reach = match ($platformKey) {
-                    'tiktok' => rand(25, 98) . '.' . rand(1, 9) . 'K',
-                    'x' => rand(3, 50) . '.' . rand(1, 9) . 'K',
-                    'instagram' => rand(5, 40) . '.' . rand(1, 9) . 'K',
-                    'facebook' => rand(4, 30) . '.' . rand(1, 9) . 'K',
-                    default => (string) rand(1200, 9800),
-                };
-
-                $engagement = match ($platformKey) {
-                    'tiktok' => (string) rand(1500, 9200),
-                    'x' => (string) rand(200, 2400),
-                    'instagram' => (string) rand(400, 3800),
-                    'facebook' => (string) rand(150, 1800),
-                    default => (string) rand(100, 850),
-                };
+                // Extract genuine reach & engagement metrics without fake random numbers
+                $reach = null;
+                $engagement = null;
+                if ($platformKey === 'x' && !empty($rawUrl)) {
+                    $liveMetrics = $this->apifyService?->fetchTwitterPostMetrics($rawUrl);
+                    if ($liveMetrics) {
+                        $reach = $liveMetrics['reach'] ?? null;
+                        $engagement = $liveMetrics['engagement'] ?? null;
+                    }
+                }
 
                 $createdAt = ($tsVal && $tsVal >= 946684800) ? date('Y-m-d H:i:s', $tsVal) : date('Y-m-d H:i:s', strtotime('-' . rand(10, 360) . ' minutes'));
 
@@ -716,10 +788,13 @@ class AiScraperService
         }
 
         foreach ($keywords as $kw) {
+            $optimalQuery = $this->buildOptimalSearchQuery($kw);
             $primaryTerms = $this->extractPrimaryTerms($kw);
             $secondaryWords = $this->extractSecondaryWords($kw);
 
-            if (count($primaryTerms) > 1 && preg_match('/\s*[-\/|,]\s+/u', $kw)) {
+            if (!empty($optimalQuery)) {
+                $primaryQuoted = $optimalQuery;
+            } elseif (count($primaryTerms) > 1 && preg_match('/\s*[-\/|,]\s+/u', $kw)) {
                 $primaryQuoted = '(' . implode(' OR ', array_map(fn($t) => '"' . trim($t, " \"'") . '"', $primaryTerms)) . ')';
             } else {
                 $primaryQuoted = '"' . trim($primaryTerms[0] ?? $kw, " \"'") . '"';
@@ -803,14 +878,7 @@ class AiScraperService
                     $fullContent = $cleanTitle . ' ' . $cleanText;
 
                     // 2. Strict Keyword Relevance Check: MUST contain primary brand term
-                    $matchedPrimary = false;
-                    foreach ($primaryTerms as $pt) {
-                        if (mb_strlen($pt) >= 2 && mb_stripos($fullContent, $pt) !== false) {
-                            $matchedPrimary = true;
-                            break;
-                        }
-                    }
-                    if (!$matchedPrimary) {
+                    if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($fullContent, $keywords)) {
                         continue; // Strictly reject unrelated news/posts!
                     }
 
@@ -882,27 +950,22 @@ class AiScraperService
                     }
                     $author = mb_substr($author, 0, 45);
 
-                    $sentimentData = $this->classifyArabicSentiment($cleanText);
+                    $sentimentData = $this->classifyArabicSentiment($cleanText . ' ' . $cleanTitle, null, $keywords);
                     $sentiment = $sentimentData['sentiment'];
                     $sentimentCounts[$sentiment]++;
 
                     $createdAt = date('Y-m-d H:i:s', $timestamp);
 
-                    $reach = match ($platformKey) {
-                        'tiktok' => rand(25, 98) . '.' . rand(1, 9) . 'K',
-                        'x' => rand(3, 50) . '.' . rand(1, 9) . 'K',
-                        'instagram' => rand(5, 40) . '.' . rand(1, 9) . 'K',
-                        'facebook' => rand(4, 30) . '.' . rand(1, 9) . 'K',
-                        default => (string) rand(1200, 9800),
-                    };
-
-                    $engagement = match ($platformKey) {
-                        'tiktok' => (string) rand(1500, 9200),
-                        'x' => (string) rand(200, 2400),
-                        'instagram' => (string) rand(400, 3800),
-                        'facebook' => (string) rand(150, 1800),
-                        default => (string) rand(100, 850),
-                    };
+                    // Extract genuine reach & engagement metrics without fake random numbers
+                    $reach = null;
+                    $engagement = null;
+                    if ($platformKey === 'x' && !empty($link)) {
+                        $liveMetrics = $this->apifyService?->fetchTwitterPostMetrics($link);
+                        if ($liveMetrics) {
+                            $reach = $liveMetrics['reach'] ?? null;
+                            $engagement = $liveMetrics['engagement'] ?? null;
+                        }
+                    }
 
                     $postsByPlatform[$targetBucket][] = [
                         'keyword' => $kw,
@@ -963,6 +1026,17 @@ class AiScraperService
                 if (!empty($allComments)) {
                     $analyticsJson = $this->geminiService->analyzeSentiment($instaComments, $fbComments, $twitterComments, $tiktokComments);
 
+                    $postMetadata = [];
+                    if (!empty($twitterUrls)) {
+                        foreach ($twitterUrls as $tUrl) {
+                            $twMeta = $this->apifyService->fetchTwitterPostMetrics($tUrl);
+                            if ($twMeta) {
+                                $postMetadata = $twMeta;
+                                break;
+                            }
+                        }
+                    }
+
                     return [
                         'status' => 'success',
                         'total_comments_count' => count($allComments),
@@ -973,6 +1047,7 @@ class AiScraperService
                             'twitter_comments' => $twitterComments,
                         ],
                         'analytics' => $analyticsJson,
+                        'post_metadata' => $postMetadata,
                     ];
                 }
             } catch (\Exception $e) {
@@ -1392,23 +1467,40 @@ class AiScraperService
                 $cleanTwUrl = preg_replace('/\?.*$/', '', trim($twUrl));
                 $rootTweetId = '';
 
-                // Extract username & tweetId to fetch real post engagement & likes
-                if (preg_match('/(?:twitter|x)\.com\/([^\/]+)\/status\/(\d+)/i', $cleanTwUrl, $m)) {
+                if ($this->apifyService) {
+                    $twMeta = $this->apifyService->fetchTwitterPostMetrics($cleanTwUrl);
+                    if ($twMeta) {
+                        $postMetadata = $twMeta;
+                    }
+                } elseif (preg_match('/(?:twitter|x)\.com\/([^\/]+)\/status\/(\d+)/i', $cleanTwUrl, $m)) {
                     $uHandle = $m[1];
                     $rootTweetId = $m[2];
                     try {
-                        $fxRes = Http::withoutVerifying()->timeout(4)->get("https://api.fxtwitter.com/{$uHandle}/status/{$rootTweetId}");
+                        $fxRes = Http::withoutVerifying()
+                            ->withHeaders(['User-Agent' => 'TelegramBot (like TwitterBot)'])
+                            ->timeout(5)
+                            ->get("https://api.fxtwitter.com/{$uHandle}/status/{$rootTweetId}");
                         if ($fxRes->successful()) {
                             $twData = $fxRes->json()['tweet'] ?? [];
                             $likes = (int) ($twData['likes'] ?? 0);
                             $views = (int) ($twData['views'] ?? 0);
                             $retweets = (int) ($twData['retweets'] ?? 0);
+                            $replies = (int) ($twData['replies'] ?? 0);
+                            $reach = null;
+                            if ($views >= 1000000) {
+                                $reach = round($views / 1000000, 1) . 'M';
+                            } elseif ($views >= 1000) {
+                                $reach = round($views / 1000, 1) . 'K';
+                            } elseif ($views > 0) {
+                                $reach = (string) $views;
+                            }
                             $postMetadata = [
                                 'likes' => $likes,
                                 'views' => $views,
                                 'retweets' => $retweets,
-                                'engagement' => number_format($likes) . ' إعجاب',
-                                'reach' => !empty($views) ? number_format($views) : null,
+                                'replies' => $replies,
+                                'engagement' => $likes > 0 ? (string) $likes : null,
+                                'reach' => $reach,
                             ];
                         }
                     } catch (\Exception $e) {}
@@ -1658,7 +1750,10 @@ class AiScraperService
     /**
      * Intelligent Arabic sentiment analysis for comments and social posts.
      */
-    public function classifyArabicSentiment(string $text, ?array $rubric = null): array
+    /**
+     * Intelligent Arabic sentiment analysis for comments and social posts.
+     */
+    public function classifyArabicSentiment(string $text, ?array $rubric = null, ?array $keywords = null): array
     {
         $clean = trim($text);
         if (empty($clean)) {
@@ -1740,8 +1835,11 @@ class AiScraperService
             }
         }
 
-        // 3. Critique, Slang Frustration, Outrage, Sarcasm (Negative)
+        // 3. Dismissal, Firing, Sanction, Outrage, Critique (Always Negative)
         $negativeTerms = [
+            'إعفاء', 'اعفاء', 'إقالة', 'اقالة', 'عزل', 'إنهاء تكليف', 'انهاء تكليف',
+            'إلغاء تعيين', 'الغاء تعيين', 'سحب صلاحيات', 'طرد', 'استبعاد', 'استقيل',
+            'شكوى', 'شكاوى', 'تظلم', 'مخالفة', 'مخالفات', 'غرامة', 'عقوبة', 'تحقيق',
             'غور', 'داهية', 'داهيه', 'ارحل', 'فاسد', 'فاسدة', 'فاسدين', 'الفاسدة',
             'فاشل', 'فاشلة', 'فاشلين', 'الفاشلة', 'احا', 'احاا', 'احاااا', 'شلل',
             'تعبانين', 'تعبان', 'هباب', 'نكد', 'نكسة', 'نكسه', 'فضيحة', 'فضيحه',
@@ -1755,8 +1853,7 @@ class AiScraperService
             'مقاطعة', 'مقاطعه', 'مضروب', 'بايظ', 'تالف', 'مضيعين', 'كوارث',
             'إحباط', 'احباط', 'تراجع', 'سوء', 'اسوأ', 'أسوأ', 'تخبط', 'سخيف',
             'زبالة', 'زباله', 'حرام', 'نفاق', 'خسارة', 'خساره', 'ضعيف', 'هزيل',
-            'مهمل', 'إهمال', 'اهمال', 'حقارة', 'وقاحة', 'وقاحه', 'طرد', 'اقالة',
-            'إقالة', 'استقيل', 'أجلنا', 'اجلنا', 'قفاكم',
+            'مهمل', 'إهمال', 'اهمال', 'حقارة', 'وقاحة', 'وقاحه', 'أجلنا', 'اجلنا', 'قفاكم',
         ];
         $negativeEmojis = ['😡', '🤬', '👎', '🤮', '💔', '🤦', '💩', '🤡', '👊', '😤', '😠', '🙄'];
 
@@ -1771,7 +1868,30 @@ class AiScraperService
             }
         }
 
-        // 4. Praise, Enthusiasm, Prayers & Love (Positive)
+        // 4. Leadership Appointments, Promotions & Milestone Achievements (Inherently Positive for target entity/person)
+        $leadershipMilestoneTerms = [
+            'تكليف', 'تعيين', 'ترقية', 'تسمية', 'تنصيب', 'اختيار',
+            'رئيسا تنفيذيا', 'رئيساً تنفيذياً', 'رئيس تنفيذي', 'الرئيس التنفيذي',
+            'مديرا عاما', 'مديراً عاماً', 'المدير العام', 'مديرا تنفيذيا', 'مديراً تنفيذياً',
+            'نال ثقة', 'نال الثقة', 'تجديد الثقة', 'ثقة معالي', 'ثقة القيادة', 'ثقة مجلس', 'نيل ثقة',
+            'صدور قرار', 'قرار وزاري', 'أمر ملكي', 'صدر قرار', 'بقرار من',
+            'تكريمه', 'تكريم', 'تتويج', 'فوز', 'جائزة', 'وسام', 'شهادة تقدير',
+            'انجاز', 'إنجاز', 'إنجازات', 'انجازات', 'نجاح', 'تميز', 'تفوق', 'ريادة', 'ابتكار',
+            'تدشين', 'افتتاح', 'اطلاق', 'إطلاق', 'قفزة', 'اعتماد', 'ترخيص',
+            'شكر وتقدير', 'إشادة', 'اشادة', 'احتفاء', 'نبارك', 'تهنئة', 'تهانينا',
+            'الف مبروك', 'ألف مبروك', 'مبارك له', 'مبارك لهم', 'يستاهل', 'خير خلف', 'أهل للثقة', 'اهل للثقة',
+        ];
+        foreach ($leadershipMilestoneTerms as $term) {
+            if (str_contains($normalized, $term)) {
+                return [
+                    'sentiment' => 'positive',
+                    'score' => 0.92,
+                    'reason' => "خبر تكليف/تعيين أو إنجاز يمثل حدثاً إيجابياً للكيان أو الشخص المستهدف ({$term})",
+                ];
+            }
+        }
+
+        // 5. Praise, Enthusiasm, Prayers & Love (Positive)
         $prayerTerms = [
             'رحمه الله', 'يرحمه', 'يرحمك', 'اللهم اغفر', 'اغفر له', 'فسيح جناته', 'الفردوس',
             'عظم الله', 'إنا لله', 'انا لله', 'اللهم امين', 'اللهم آمين', 'يارب العالمين',
@@ -1811,14 +1931,13 @@ class AiScraperService
             }
         }
 
-        // 5. Inquiries, Questions, Logistics, Info (Neutral)
+        // 6. Inquiries, Questions, Logistics, Directory Info (Neutral)
         $neutralTerms = [
             'هل', 'متى', 'أين', 'اين', 'كيف', 'بكم', 'السعر', 'التفاصيل', 'ممكن',
             'استفسار', 'لو سمحت', 'أين يقع', 'ما هو', 'ماهو', 'لماذا', 'ليه',
             'ايش', 'وشو', 'فين', 'ازاي', 'إزاي', 'طريقة', 'رابط', 'تواصل',
             'الدوام', 'أوقات', 'مواعيد', 'شروط', 'هل فيه', 'هل يوجد', 'متاح',
-            'متوفر', 'رقم', 'عنوان', 'مركز', 'موقع', 'تطبيق', 'تحديث', 'صرح',
-            'أعلن', 'اعلن', 'بيان', 'نشر', 'تقرير',
+            'متوفر', 'رقم', 'عنوان', 'مركز', 'موقع', 'تطبيق', 'تحديث',
         ];
         foreach ($neutralTerms as $term) {
             if (str_contains($normalized, $term)) {

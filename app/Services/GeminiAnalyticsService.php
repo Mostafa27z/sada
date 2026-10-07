@@ -285,7 +285,7 @@ PROMPT;
      * Accurately classify sentiment (positive, negative, neutral) for individual posts,
      * with support for custom stance/rubric rules.
      */
-    public function classifyPostsSentiment(array $posts, ?array $rubric = null): array
+    public function classifyPostsSentiment(array $posts, ?array $rubric = null, ?array $keywords = null): array
     {
         if (empty($posts) || empty($this->apiKey)) {
             return [];
@@ -314,6 +314,18 @@ PROMPT;
         $results = [];
         $rubricChunk = $this->buildRubricPromptChunk($rubric);
 
+        $relevanceChunk = "";
+        if (!empty($keywords)) {
+            $kwStr = implode(' | ', array_values(array_filter(array_map('trim', (array)$keywords))));
+            $relevanceChunk = <<<REL
+⚠️ فحص الصلة بالكيان والموضوع المستهدف بالرصد (Strict Entity & Subject Relevance):
+الكيانات والأشخاص المستهدفون بالرصد: [{$kwStr}]
+يجب تحديد حقل "is_relevant" (true / false) بدقة تامة لكل عنصر:
+- ضع "is_relevant": true فقط إذا كان المنشور يتناول فعلياً الشخص أو الكيان أو الموضوع المستهدف أعلاه.
+- ضع "is_relevant": false إذا كان المنشور يتناول شخصاً أو مسؤولاً آخر مختلفاً (مثلاً: رئيس تنفيذي آخر في منطقة أخرى، أو شخص آخر باسم مختلف)، أو محتوى ترفيهي/إعلاني عام لا علاقة له بالكيان المستهدف.
+REL;
+        }
+
         // Batch in groups of 30 for high reliability and fast response
         $chunks = array_chunk($itemsToClassify, 30);
 
@@ -321,11 +333,12 @@ PROMPT;
             $prompt = <<<PROMPT
 أنت خبير لغوي واستراتيجي متخصص في تحليل مشاعر منشورات وتعليقات منصات التواصل الاجتماعي ومقالات الرأي العربية واللهجات المحلية (السعودية، الخليجية، المصرية، الشامية، إلخ).
 {$rubricChunk}
+{$relevanceChunk}
 
-المطلوب: تصنيف المشاعر والمواقف لكل عنصر بدقة وموضوعية إلى إحدى الحالات الثلاث (positive / negative / neutral):
-1. "positive": أي محتوى يتوافق مع ما تم تعريفه كإيجابي أعلاه، أو إشادة، شكر، تشجيع، استنكار للجريمة والخصوم، دعم للحق وللقضية المستهدفة.
-2. "negative": أي محتوى يتوافق مع ما تم تعريفه كسلبي أعلاه، أو تبرير للجريمة، هجوم على الحليف، شكوى، استياء، تشكيك.
-3. "neutral": نقل خبر محايد، سؤال أو استفسار، نشر رابط، معلومة مجردة بدون اتخاذ موقف أو مدح أو ذم.
+المطلوب: فحص صلة المنشور أولاً، ثم تصنيف المشاعر والمواقف لكل عنصر بدقة وموضوعية إلى إحدى الحالات الثلاث (positive / negative / neutral) بناءً على أثر المحتوى على الشخص أو الكيان المستهدف بالرصد:
+1. "positive": أي محتوى يتوافق مع ما تم تعريفه كإيجابي أعلاه، أو إشادة، شكر، تشجيع، أو أخبار التكليف والتعيين والترقية وتولي المناصب القيادية (مثل: تكليف رئيساً تنفيذياً، تعيين، ترقية، نيل الثقة، فوز، تكريم، تدشين، إنجاز، نجاح، مباركة وتهنئة)، أو أي حدث يصب في مصلحة الكيان/الشخص المستهدف ويعكس ثقة أو تقديراً له.
+2. "negative": أي محتوى يتوافق مع ما تم تعريفه كسلبي أعلاه، أو إعفاء/إقالة، إنهاء تكليف، شكوى، استياء، تشكيك، نقد، هجوم، تراجع، إهمال، أو مخالفة موجهة ضد الكيان/الشخص المستهدف.
+3. "neutral": معلومات روتينية مجردة أو استفسار إجرائي لا يحمل أي مكسب أو ترقية أو مدح أو ذم، أو أرقام تواصل ومواعيد دوام.
 
 إليك العناصر المطلوب تصنيفها كـ JSON Array:
 PROMPT;
@@ -337,6 +350,7 @@ PROMPT;
     {
       "index": 0,
       "id": "معرف المنشور",
+      "is_relevant": true,
       "sentiment": "positive" أو "negative" أو "neutral",
       "sentiment_score": 0.85,
       "reason": "سبب تصنيف المنشور بهذا الشعور وفق المعيار المحدد"
@@ -370,8 +384,11 @@ SYS;
                         $score = floatval($cItem['sentiment_score'] ?? 0.8);
                         if ($score <= 0 || $score > 1.0) $score = 0.85;
 
+                        $isRelevant = isset($cItem['is_relevant']) ? (bool)$cItem['is_relevant'] : true;
+
                         if ($key !== null) {
                             $results[(string)$key] = [
+                                'is_relevant' => $isRelevant,
                                 'sentiment' => $sent,
                                 'sentiment_score' => $score,
                                 'reason' => (string)($cItem['reason'] ?? ''),
