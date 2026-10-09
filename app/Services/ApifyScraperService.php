@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -13,6 +14,18 @@ class ApifyScraperService
     public function __construct()
     {
         $this->token = config('services.apify.token') ?: env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2') ?: '';
+    }
+
+    protected static ?int $circuitBrokenUntil = null;
+
+    public static function isCircuitOpen(): bool
+    {
+        return self::$circuitBrokenUntil !== null && time() < self::$circuitBrokenUntil;
+    }
+
+    public static function resetCircuit(): void
+    {
+        self::$circuitBrokenUntil = null;
     }
 
     /**
@@ -34,7 +47,7 @@ class ApifyScraperService
         return Http::withOptions([
             'curl' => $curlOptions,
             'verify' => false,
-            'connect_timeout' => 30,
+            'connect_timeout' => 15,
         ]);
     }
 
@@ -43,12 +56,34 @@ class ApifyScraperService
      */
     protected function runActorAndFetchItems(string $actorId, array $input, int $timeoutSeconds = 180): array
     {
+        if (self::isCircuitOpen()) {
+            return [];
+        }
+
         if (empty($this->token)) {
             Log::error("Apify API token is missing in .env");
             return [];
         }
 
         try {
+            // Sanitize input arrays: eliminate duplicate and empty items in any scalar list (e.g. keywords, searchQueries, hashtags, urls)
+            foreach ($input as $key => $val) {
+                if (is_array($val) && !empty($val) && array_is_list($val)) {
+                    $isScalarList = true;
+                    foreach ($val as $item) {
+                        if (!is_string($item) && !is_numeric($item)) {
+                            $isScalarList = false;
+                            break;
+                        }
+                    }
+                    if ($isScalarList) {
+                        $cleaned = array_map(fn($item) => is_string($item) ? trim($item) : $item, $val);
+                        $cleaned = array_filter($cleaned, fn($item) => $item !== '' && $item !== null);
+                        $input[$key] = array_values(array_unique($cleaned, SORT_REGULAR));
+                    }
+                }
+            }
+
             // 1. Trigger Actor Run and wait for finish (replace '/' with '~' for named actors in Apify v2 REST API)
             $normalizedActorId = str_replace('/', '~', $actorId);
             $runUrl = "{$this->baseUrl}/acts/{$normalizedActorId}/runs?token={$this->token}&waitForFinish={$timeoutSeconds}";
@@ -70,18 +105,37 @@ class ApifyScraperService
                 return [];
             }
 
-            // 2. Fetch dataset items
+            // 2. Fetch dataset items with automatic retry for transient network/SSL fluctuations
             $datasetUrl = "{$this->baseUrl}/datasets/{$datasetId}/items?token={$this->token}";
-            $datasetResponse = $this->getHttpClient()->timeout(60)->get($datasetUrl);
+            for ($attempt = 1; $attempt <= 3; $attempt++) {
+                try {
+                    $datasetResponse = $this->getHttpClient()
+                        ->connectTimeout(15)
+                        ->timeout(60)
+                        ->get($datasetUrl);
 
-            if ($datasetResponse->successful()) {
-                return $datasetResponse->json() ?? [];
+                    if ($datasetResponse->successful()) {
+                        self::resetCircuit();
+                        return $datasetResponse->json() ?? [];
+                    }
+                } catch (\Throwable $fetchEx) {
+                    if ($attempt === 3) {
+                        throw $fetchEx;
+                    }
+                    usleep(1000000); // 1s backoff before retrying
+                }
             }
 
             Log::error("Apify Actor {$actorId} dataset fetch failed", ['dataset_id' => $datasetId]);
             return [];
-        } catch (\Exception $e) {
-            Log::error("Apify Actor {$actorId} exception: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            $msg = $e->getMessage();
+            if (str_contains($msg, 'Could not resolve host') || str_contains($msg, 'SSL connection timeout') || str_contains($msg, 'Connection was reset') || str_contains($msg, 'Timeout was reached') || str_contains($msg, 'cURL error 6') || str_contains($msg, 'cURL error 28') || str_contains($msg, 'cURL error 35')) {
+                self::$circuitBrokenUntil = time() + 60; // Trip circuit breaker for 60s
+                Log::warning("Apify Circuit Breaker tripped: Network/DNS connectivity issue ({$msg}). Skipping remote calls for 60s.");
+            } else {
+                Log::error("Apify Actor {$actorId} exception: " . $msg);
+            }
             return [];
         }
     }
@@ -148,6 +202,11 @@ class ApifyScraperService
 
     public function fetchXByKeywords(array $keywords, int $maxItems = 10, ?string $country = null, ?string $dateFrom = null, ?string $dateTo = null): array
     {
+        $cacheKey = 'apify_x_kw_' . md5(json_encode([$keywords, $maxItems, $country, $dateFrom, $dateTo]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
         $sinceClause = $dateFrom ? "since:{$dateFrom}" : "";
         $untilClause = $dateTo ? " until:{$dateTo}" : "";
 
@@ -164,6 +223,8 @@ class ApifyScraperService
             $parts = array_filter([$kw, $sinceClause, $untilClause]);
             return implode(' ', $parts);
         }, $targetedQueries);
+
+        $queryKeywords = array_values(array_unique(array_filter($queryKeywords)));
 
         $input = [
             "keywords" => array_slice($queryKeywords, 0, 10),
@@ -298,15 +359,37 @@ class ApifyScraperService
             }
         }
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
-    public function fetchInstagramByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
+    public function fetchInstagramByKeywords(array $keywords, int $maxItems = 10, ?string $country = null, bool $explicitHashtags = false): array
     {
-        $targetedQueries = \App\Support\KeywordRelevanceFilter::generateTargetedSearchQueries($keywords);
-        if (empty($targetedQueries)) {
-            $targetedQueries = $keywords;
+        // Cost optimization: Strip '#' from keywords to perform standard post scraping ($0.0005)
+        // instead of triggering expensive Apify hashtag query billing ($0.015 per query).
+        $processedKeywords = array_map(function($kw) use ($explicitHashtags) {
+            $kw = trim($kw);
+            return $explicitHashtags ? $kw : ltrim($kw, '#');
+        }, $keywords);
+        $processedKeywords = array_values(array_filter($processedKeywords));
+
+        if (empty($processedKeywords)) {
+            return [];
         }
+
+        $cacheKey = 'apify_ig_kw_' . md5(json_encode([$processedKeywords, $maxItems, $country, $explicitHashtags]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        $targetedQueries = \App\Support\KeywordRelevanceFilter::generateTargetedSearchQueries($processedKeywords);
+        if (empty($targetedQueries)) {
+            $targetedQueries = $processedKeywords;
+        }
+        $targetedQueries = array_values(array_unique(array_filter($targetedQueries)));
 
         $input = [
             "keywords" => array_slice($targetedQueries, 0, 8),
@@ -370,15 +453,25 @@ class ApifyScraperService
             }
         }
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
     public function fetchTiktokByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
+        $cacheKey = 'apify_tt_kw_' . md5(json_encode([$keywords, $maxItems, $country]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
         $targetedQueries = \App\Support\KeywordRelevanceFilter::generateTargetedSearchQueries($keywords);
         if (empty($targetedQueries)) {
             $targetedQueries = $keywords;
         }
+        $targetedQueries = array_values(array_unique(array_filter($targetedQueries)));
 
         $input = [
             "maxItems" => max(25, $maxItems * 2),
@@ -460,11 +553,20 @@ class ApifyScraperService
             return strtotime($b['created_at'] ?? 'now') <=> strtotime($a['created_at'] ?? 'now');
         });
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
     public function fetchFacebookByKeywords(array $keywords, int $maxItems = 10, ?string $country = null): array
     {
+        $cacheKey = 'apify_fb_kw_' . md5(json_encode([$keywords, $maxItems, $country]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
         $allResults = [];
         $targetedQueries = \App\Support\KeywordRelevanceFilter::generateTargetedSearchQueries($keywords);
         if (empty($targetedQueries)) {
@@ -477,7 +579,11 @@ class ApifyScraperService
         $cutoffTime = time() - (7 * 86400); // 7-day freshness cutoff
         $perKwLimit = max(5, intval(ceil($maxItems / count($targetedQueries))));
 
-        foreach (array_slice($targetedQueries, 0, 6) as $kw) {
+        foreach (array_slice($targetedQueries, 0, 3) as $kw) {
+            if (self::isCircuitOpen()) {
+                break;
+            }
+
             $input = [
                 "query" => $kw,
                 "resultsCount" => max(10, $perKwLimit * 2),
@@ -489,6 +595,9 @@ class ApifyScraperService
             }
 
             $items = $this->runActorAndFetchItems("TMBawM4LZpKN15DZX", $input);
+            if (self::isCircuitOpen()) {
+                break;
+            }
             $kwCount = 0;
 
             foreach ($items as $item) {
@@ -555,6 +664,10 @@ class ApifyScraperService
             return strtotime($b['created_at'] ?? 'now') <=> strtotime($a['created_at'] ?? 'now');
         });
 
+        if (!empty($allResults)) {
+            Cache::put($cacheKey, $allResults, now()->addHours(6));
+        }
+
         return $allResults;
     }
 
@@ -563,11 +676,16 @@ class ApifyScraperService
     public function fetchInstagramComments(array $urls, int $limit = 100): array
     {
         if (empty($urls)) return [];
+
+        $cacheKey = 'apify_ig_comments_' . md5(json_encode([$urls, $limit]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
         $input = [
             "resultsType" => "comments",
             "directUrls" => $urls,
             "resultsLimit" => $limit,
-            "searchType" => "hashtag",
             "searchLimit" => $limit,
             "addParentData" => false,
         ];
@@ -583,12 +701,22 @@ class ApifyScraperService
             }
         }
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
     public function fetchFacebookComments(array $urls, int $limit = 100): array
     {
         if (empty($urls)) return [];
+
+        $cacheKey = 'apify_fb_comments_' . md5(json_encode([$urls, $limit]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
         $startUrls = array_map(fn($u) => ["url" => $u, "platform" => "FACEBOOK"], $urls);
         $input = [
             "startUrls" => $startUrls,
@@ -608,12 +736,22 @@ class ApifyScraperService
             }
         }
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
     public function fetchTiktokComments(array $urls, int $limit = 100): array
     {
         if (empty($urls)) return [];
+
+        $cacheKey = 'apify_tt_comments_' . md5(json_encode([$urls, $limit]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
         $input = [
             "videoUrls" => $urls,
             "maxCommentsPerVideo" => $limit,
@@ -632,12 +770,22 @@ class ApifyScraperService
             }
         }
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
     public function fetchTwitterComments(array $urls, int $limit = 100): array
     {
         if (empty($urls)) return [];
+
+        $cacheKey = 'apify_x_comments_' . md5(json_encode([$urls, $limit]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
         $input = [
             "postUrls" => $urls,
             "resultsLimit" => $limit,
@@ -656,6 +804,10 @@ class ApifyScraperService
             }
         }
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
@@ -667,6 +819,11 @@ class ApifyScraperService
     public function fetchFacebookPostsTrending(array $keywords, int $maxPosts = 50): array
     {
         if (empty($keywords)) return [];
+
+        $cacheKey = 'apify_fb_trend_' . md5(json_encode([$keywords, $maxPosts]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
 
         // Check if APIFY_TOKEN_3 is available for IKvFqAEWd6Ms91VsH
         $customToken = env('APIFY_TOKEN_3');
@@ -692,6 +849,9 @@ class ApifyScraperService
                             "url" => $item['url'] ?? null,
                         ];
                     }
+                }
+                if (!empty($results)) {
+                    Cache::put($cacheKey, $results, now()->addHours(6));
                 }
                 return $results;
             }
@@ -772,18 +932,33 @@ class ApifyScraperService
             return strtotime($b['time'] ?? 'now') <=> strtotime($a['time'] ?? 'now');
         });
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
     /**
-     * Fetch trending Instagram posts based on hashtags with dynamic limits.
+     * Fetch trending Instagram posts based on keywords with dynamic limits.
+     * By default, performs standard post search ($0.0005 per item) instead of expensive hashtag query ($0.015 per query).
      */
-    public function fetchInstagramPostsTrending(array $keywords, int $resultsLimit = 50): array
+    public function fetchInstagramPostsTrending(array $keywords, int $resultsLimit = 50, bool $explicitHashtags = false): array
     {
         if (empty($keywords)) return [];
 
+        // Cost optimization: Hashtag queries cost $0.015, while normal post extraction costs $0.0005 (30x cheaper).
+        // Default to normal post extraction unless hashtags are explicitly requested by client.
+        if (!$explicitHashtags) {
+            return $this->fetchInstagramByKeywords($keywords, $resultsLimit, null, false);
+        }
+
         // Clean hashtags if they include '#'
         $cleanHashtags = array_map(fn($k) => ltrim($k, '#'), $keywords);
+        $cacheKey = 'apify_ig_trend_ht_' . md5(json_encode([$cleanHashtags, $resultsLimit]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
 
         $input = [
             "hashtags" => array_values($cleanHashtags),
@@ -820,6 +995,10 @@ class ApifyScraperService
             return ($b['engagement'] ?? 0) <=> ($a['engagement'] ?? 0);
         });
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
@@ -829,6 +1008,11 @@ class ApifyScraperService
     public function fetchTiktokTrending(array $keywords, int $maxItems = 50): array
     {
         if (empty($keywords)) return [];
+
+        $cacheKey = 'apify_tt_trend_' . md5(json_encode([$keywords, $maxItems]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
 
         $input = [
             "keywords" => array_values($keywords),
@@ -877,6 +1061,10 @@ class ApifyScraperService
             return ($b['engagement'] ?? 0) <=> ($a['engagement'] ?? 0);
         });
 
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
+        }
+
         return $results;
     }
 
@@ -885,6 +1073,11 @@ class ApifyScraperService
      */
     public function fetchTwitterTrends(array $locations = ["SA", "EG"], int $maxTrends = 50): array
     {
+        $cacheKey = 'apify_x_trends_' . md5(json_encode([$locations, $maxTrends]));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
         $input = [
             "locations" => $locations,
             "maxTrendsPerLocation" => min(50, max(1, $maxTrends)),
@@ -907,6 +1100,10 @@ class ApifyScraperService
                     "volume" => $volume,
                 ];
             }
+        }
+
+        if (!empty($results)) {
+            Cache::put($cacheKey, $results, now()->addHours(6));
         }
 
         return $results;

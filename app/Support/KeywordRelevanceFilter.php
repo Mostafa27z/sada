@@ -98,7 +98,7 @@ class KeywordRelevanceFilter
      * Extract validation anchors from a keyword string.
      * Returns multi-word distinct phrases and required pairs.
      */
-    public static function extractValidationAnchors(string $keyword): array
+    public static function extractValidationAnchors(string $keyword, array $allKeywords = []): array
     {
         $clean = trim($keyword, " \t\n\r\0\x0B\"'");
         $clean = preg_replace('/^#+/u', '', $clean);
@@ -149,20 +149,10 @@ class KeywordRelevanceFilter
                 $shortName = "{$firstName} {$family}";
                 $remainder = trim(str_replace($matchedName, '', $clean));
                 $hasRemainder = !empty($remainder);
-
-                // If NO remainder/context is specified, the short name stands alone
-                if (!$hasRemainder) {
-                    $phrases[] = $shortName;
-                    $pairs[] = [$firstName, $family];
-
-                    if (!empty($father)) {
-                        $phrases[] = "{$firstName} بن {$father}";
-                        $phrases[] = "{$firstName} ابن {$father}";
-                    }
-                }
+                $isPatronymic = !empty($father);
 
                 // Full distinctive name with father (e.g. "متعب بن عبدالله الحربي") distinguishes from other people with same family name
-                if (!empty($father)) {
+                if ($isPatronymic) {
                     $phrases[] = "{$firstName} بن {$father} {$family}";
                     $phrases[] = "{$firstName} ابن {$father} {$family}";
 
@@ -173,11 +163,10 @@ class KeywordRelevanceFilter
                     }
                 }
 
-                // Look for organization / role phrase in the remainder (e.g., "رئيس مجمع تبوك الصحي", "تبوك الصحي")
+                // If explicit organization/role context is present in the remainder
                 if ($hasRemainder) {
                     $orgPhrases = self::extractOrgPhrases($remainder);
                     foreach ($orgPhrases as $op) {
-                        // Bind person and organization together into compounds and required pairs
                         $phrases[] = "{$shortName} {$op}";
                         $phrases[] = "{$op} {$shortName}";
                         $pairs[] = [$firstName, $op];
@@ -185,7 +174,6 @@ class KeywordRelevanceFilter
                         $pairs[] = [$shortName, $op];
                     }
 
-                    // Extract non-generic tokens from remainder (e.g. "تبوك")
                     $remWords = array_values(array_filter(explode(' ', $remainder)));
                     foreach ($remWords as $rw) {
                         $normRw = self::normalize($rw);
@@ -195,25 +183,45 @@ class KeywordRelevanceFilter
                             $pairs[] = [$shortName, $rw];
                         }
                     }
+                } else {
+                    // When NO remainder is present in this keyword:
+                    // Extract domain context from other keywords in the campaign (e.g., "مجمع تبوك الطبي")
+                    $domainTokens = self::extractDomainContextTokens($allKeywords, $clean);
+
+                    if (!empty($domainTokens)) {
+                        foreach ($domainTokens as $dt) {
+                            $phrases[] = "{$shortName} {$dt}";
+                            $pairs[] = [$shortName, $dt];
+                        }
+                    }
+
+                    // Standard leadership and executive anchors to prevent homonym pollution
+                    $leadershipRoles = ['تنفيذي', 'الرئيس التنفيذي', 'رئيس', 'مدير', 'تكليف', 'تعيين'];
+                    foreach ($leadershipRoles as $lr) {
+                        $pairs[] = [$shortName, $lr];
+                    }
+
+                    // If NOT patronymic and no external domain tokens found, allow bare short name as fallback
+                    if (!$isPatronymic && empty($domainTokens)) {
+                        $phrases[] = $shortName;
+                        $pairs[] = [$firstName, $family];
+                    }
                 }
             }
         } else {
             // General multi-word phrase parsing
             $words = array_values(array_filter(explode(' ', $clean)));
             if (count($words) >= 2) {
-                // If it starts or contains person title: "الدكتور فلان الفلاني"
                 if (preg_match('/(?:دكتور|الدكتور|الأستاذ|استاذ|الشيخ|شيخ|معالي|سعادة|المهندس|مهندس)\s+([\p{L}]+)\s+([\p{L}]+)/u', $clean, $pm)) {
                     $phrases[] = "{$pm[1]} {$pm[2]}";
                     $pairs[] = [$pm[1], $pm[2]];
                 }
 
-                // Check for organization entities like "مجمع تبوك الصحي" / "تجمع تبوك الصحي"
                 $orgPhrases = self::extractOrgPhrases($clean);
                 foreach ($orgPhrases as $op) {
                     $phrases[] = $op;
                 }
 
-                // Distinct non-generic consecutive 2-word tokens
                 for ($i = 0; $i < count($words) - 1; $i++) {
                     $w1 = $words[$i];
                     $w2 = $words[$i + 1];
@@ -229,7 +237,6 @@ class KeywordRelevanceFilter
         foreach ($phrases as $p) {
             $p = trim($p);
             $words = array_values(array_filter(explode(' ', $p)));
-            // Single-word region (e.g. "تبوك") must never act as a standalone match
             if (count($words) === 1 && self::isCommonRegion($p)) {
                 continue;
             }
@@ -255,7 +262,45 @@ class KeywordRelevanceFilter
     }
 
     /**
-     * Extract specific organizational phrases (e.g., "مجمع تبوك الصحي" -> "تجمع تبوك الصحي", "تبوك الصحي").
+     * Extract contextual domain tokens from other keywords to anchor person entities.
+     */
+    public static function extractDomainContextTokens(array $allKeywords, ?string $excludeKeyword = null): array
+    {
+        $tokens = [];
+        $normExclude = $excludeKeyword ? self::normalize($excludeKeyword) : null;
+
+        foreach ($allKeywords as $kw) {
+            $kw = trim($kw);
+            if (empty($kw)) continue;
+
+            $normKw = self::normalize($kw);
+            if ($normExclude && $normKw === $normExclude) {
+                continue;
+            }
+
+            // Extract org phrases (e.g., "مجمع تبوك الطبي" -> "تجمع تبوك الصحي", "تبوك الطبي", etc.)
+            $orgPhrases = self::extractOrgPhrases($kw);
+            foreach ($orgPhrases as $op) {
+                if (mb_strlen(self::normalize($op)) >= 4) {
+                    $tokens[] = $op;
+                }
+            }
+
+            // Extract individual non-generic words
+            $words = array_values(array_filter(explode(' ', $kw)));
+            foreach ($words as $w) {
+                $normW = self::normalize($w);
+                if (mb_strlen($normW) >= 3 && !self::isGenericToken($w)) {
+                    $tokens[] = $w;
+                }
+            }
+        }
+
+        return array_values(array_unique(array_filter($tokens)));
+    }
+
+    /**
+     * Extract specific organizational phrases (e.g., "مجمع تبوك الطبي" -> "تجمع تبوك الصحي", "تبوك الطبي").
      */
     protected static function extractOrgPhrases(string $text): array
     {
@@ -276,22 +321,30 @@ class KeywordRelevanceFilter
             if (!self::isGenericToken($cityOrName)) {
                 $orgs[] = "تجمع {$cityOrName} الصحي";
                 $orgs[] = "مجمع {$cityOrName} الصحي";
+                $orgs[] = "تجمع {$cityOrName} الطبي";
+                $orgs[] = "مجمع {$cityOrName} الطبي";
                 $orgs[] = "تجمع {$cityOrName}";
+                $orgs[] = "مجمع {$cityOrName}";
                 $orgs[] = "{$cityOrName} الصحي";
+                $orgs[] = "{$cityOrName} الطبي";
                 if (!self::isCommonRegion($cityOrName)) {
                     $orgs[] = $cityOrName;
                 }
             }
         }
 
-        // Pattern 2: "[City/Name] [الصحي|الصحية|الطبي|الطبية]" e.g. "تبوك الصحي"
+        // Pattern 2: "[City/Name] [الصحي|الصحية|الطبي|الطبية]" e.g. "تبوك الطبي"
         if (preg_match('/(?:^|\s)([\p{L}]+)\s+(?:الصحي|الصحية|الطبي|الطبية)/u', $clean, $sm)) {
             $cityOrName = trim($sm[1]);
             if (!self::isGenericToken($cityOrName)) {
                 $orgs[] = "{$cityOrName} الصحي";
+                $orgs[] = "{$cityOrName} الطبي";
                 $orgs[] = "تجمع {$cityOrName} الصحي";
                 $orgs[] = "مجمع {$cityOrName} الصحي";
+                $orgs[] = "تجمع {$cityOrName} الطبي";
+                $orgs[] = "مجمع {$cityOrName} الطبي";
                 $orgs[] = "تجمع {$cityOrName}";
+                $orgs[] = "مجمع {$cityOrName}";
                 if (!self::isCommonRegion($cityOrName)) {
                     $orgs[] = $cityOrName;
                 }
@@ -304,39 +357,86 @@ class KeywordRelevanceFilter
     /**
      * Generate high-precision search queries to send to social platforms & web search.
      * Prevents social networks from doing loose token splitting.
+     * Round-robin interleaves queries across all input keywords to guarantee fair quota allocation.
      */
     public static function generateTargetedSearchQueries(array $keywords): array
     {
-        $queries = [];
-        foreach ($keywords as $kw) {
-            $kw = trim($kw);
-            if (empty($kw)) continue;
+        $cleanKeywords = array_values(array_filter(array_map('trim', $keywords)));
+        if (empty($cleanKeywords)) {
+            return [];
+        }
 
-            $anchors = self::extractValidationAnchors($kw);
+        $queriesByKeyword = [];
+        foreach ($cleanKeywords as $kw) {
+            $kwQueries = [];
+            $anchors = self::extractValidationAnchors($kw, $cleanKeywords);
 
-            // 1. High-precision person + context pairs first (e.g. "متعب الحربي" "تبوك")
-            foreach ($anchors['pairs'] as $pair) {
-                if (count($pair) === 2) {
-                    $queries[] = "\"{$pair[0]}\" \"{$pair[1]}\"";
-                }
-            }
-
-            // 2. Specific multi-word phrases (quoted for high precision)
+            // 1. High-precision full phrases (quoted)
             foreach ($anchors['phrases'] as $phrase) {
                 $p = trim($phrase);
                 if (mb_strlen($p) >= 4 && !self::isGenericToken($p)) {
-                    $queries[] = "\"{$p}\"";
+                    $kwQueries[] = "\"{$p}\"";
                 }
             }
 
-            // 3. Add clean original keyword if concise
+            // 2. High-precision person + context pairs (e.g. "متعب الحربي" "تبوك")
+            foreach ($anchors['pairs'] as $pair) {
+                if (count($pair) === 2) {
+                    $kwQueries[] = "\"{$pair[0]}\" \"{$pair[1]}\"";
+                }
+            }
+
+            // 3. Add clean original keyword if concise and not already present
             $wordCount = count(array_filter(explode(' ', $kw)));
-            if ($wordCount <= 3 && !in_array($kw, $queries)) {
-                $queries[] = $kw;
+            $quotedKw = "\"{$kw}\"";
+            if ($wordCount <= 3 && !in_array($kw, $kwQueries) && !in_array($quotedKw, $kwQueries)) {
+                $kwQueries[] = $kw;
+            }
+
+            $queriesByKeyword[] = array_values(array_unique(array_filter($kwQueries)));
+        }
+
+        // Interleave queries round-robin so every keyword gets fair search share
+        $interleaved = [];
+        $maxCount = 0;
+        foreach ($queriesByKeyword as $list) {
+            if (count($list) > $maxCount) {
+                $maxCount = count($list);
             }
         }
 
-        return array_values(array_unique(array_filter($queries)));
+        for ($i = 0; $i < $maxCount; $i++) {
+            foreach ($queriesByKeyword as $list) {
+                if (isset($list[$i])) {
+                    $interleaved[] = $list[$i];
+                }
+            }
+        }
+
+        // Deduplicate while preserving round-robin order
+        $finalQueries = [];
+        foreach ($interleaved as $q) {
+            if (!in_array($q, $finalQueries, true)) {
+                $finalQueries[] = $q;
+            }
+        }
+
+        // Filter out unquoted versions if quoted version exists
+        $filtered = [];
+        $quotedSet = [];
+        foreach ($finalQueries as $q) {
+            if (str_starts_with($q, '"') && str_ends_with($q, '"')) {
+                $quotedSet[trim($q, '"')] = true;
+            }
+        }
+        foreach ($finalQueries as $q) {
+            if (isset($quotedSet[$q])) {
+                continue; // Skip unquoted form if quoted form is present
+            }
+            $filtered[] = $q;
+        }
+
+        return $filtered;
     }
 
     /**
@@ -350,14 +450,50 @@ class KeywordRelevanceFilter
         }
 
         $sportsMarkers = [
-            'مباراة', 'اهداف', 'هدف', 'دوري روشن', 'نادي الهلال', 'نادي الشباب',
-            'الهلال', 'تشكيلة', 'لاعب كرة', 'الظهير', 'كاس الملك',
-            'دوري ابطال', 'اسيست', 'ركله جزاء', 'تبديل', 'المدرب', 'فوز الهلال', 'تعادل'
+            // Competitions & Tournaments
+            'كاس الخليج', 'كأس الخليج', 'خليجي', 'خليجي27', 'خليجي 27', 'خليجي26', 'خليجي 26',
+            'كاس اسيا', 'كأس آسيا', 'كاس العالم', 'كأس العالم', 'مونديال',
+            'دوري روشن', 'دوري يلو', 'كاس الملك', 'كأس الملك', 'كاس السوبر', 'كأس السوبر',
+            'دوري ابطال', 'دوري أبطال', 'دوري الابطال', 'دوري الأبطال',
+            'بطولة', 'مباراة', 'مباريات', 'نهائي', 'نصف نهائي', 'ربع نهائي',
+            // Clubs & National Teams
+            'نادي الهلال', 'نادي النصر', 'نادي الأهلي', 'نادي الاهلي', 'نادي الاتحاد', 'نادي الشباب',
+            'الهلال', 'النصر', 'الأهلي', 'الاهلي', 'الاتحاد', 'الشباب', 'الاتفاق', 'التعاون', 'القادسية',
+            'الملكي', 'الزعيم', 'العالمي', 'العميد', 'الليث', 'نادي',
+            'المنتخب', 'المنتخب السعودي', 'منتخبنا', 'الأخضر', 'الاخضر', 'الصقور الخضر',
+            // Roles, Positions & Match Actions
+            'لاعب كرة', 'لاعب كرة قدم', 'لاعب المنتخب', 'لاعب', 'اللاعب', 'لاعبي', 'لاعبين', 'اللاعبين',
+            'كابتن', 'الكابتن', 'الظهير', 'جناح', 'حارس مرمى', 'مهاجم', 'مدافع',
+            'مدرب', 'المدرب', 'تشكيلة', 'هدف', 'اهداف', 'أهداف', 'اسيست', 'بلنتي',
+            'ضربة جزاء', 'ركلة جزاء', 'ركله جزاء', 'بطاقة صفراء', 'بطاقة حمراء',
+            'طرد', 'تبديل', 'تسديدة', 'شوط', 'ديربي', 'كلاسيكو', 'مرمى', 'شباك', 'هاتريك',
+            // Sports Media, Shows & Hashtags
+            'صحيفة الرياضية', 'القناة الرياضية', 'قناة الرياضية', 'الرياضية', 'قناة الكاس', 'قناة الكأس',
+            'برنامج أكشن', 'اكشن مع وليد', 'صدى الملاعب', 'في المرمى',
+            'الرياضة على تيك توك', 'الرياضة_على_تيك_توك', 'كورة', 'رياضة', 'رياضي', 'كروي',
+            // Video Games & Esports
+            'fc24', 'fc25', 'fc26', 'fc27', 'fifa', 'فيفا', 'بلايستيشن', 'playstation',
+            // Well-known sports figures co-occurring with player
+            'محمد نور', 'سبيت خاطر', 'مانشيني', 'رينارد', 'جيسوس', 'خيسوس', 'سالم الدوسري', 'نيمار', 'رونالدو', 'ميتروفيتش'
         ];
+
+        $paddedContent = ' ' . $normContent . ' ';
 
         $hasSports = false;
         foreach ($sportsMarkers as $sm) {
-            if (mb_stripos($normContent, self::normalize($sm)) !== false) {
+            $normMarker = self::normalize($sm);
+            if (empty($normMarker) || mb_strlen($normMarker) < 2) {
+                continue;
+            }
+
+            // Word-boundary check: " {marker} "
+            if (mb_stripos($paddedContent, ' ' . $normMarker . ' ') !== false) {
+                $hasSports = true;
+                break;
+            }
+
+            // Compound multi-word check
+            if (str_contains($normMarker, ' ') && mb_stripos($normContent, $normMarker) !== false) {
                 $hasSports = true;
                 break;
             }
@@ -367,8 +503,12 @@ class KeywordRelevanceFilter
             return false;
         }
 
-        $healthContext = ['صحي', 'صحة', 'تجمع', 'مجمع', 'مستشفى', 'عيادة', 'طبي', 'وزارة الصحة'];
-        foreach ($healthContext as $hc) {
+        // Only override if the post mentions explicit, official healthcare organizational entities
+        $strictHealthContext = [
+            'وزارة الصحة', 'تجمع تبوك الصحي', 'مجمع تبوك الطبي', 'مجمع تبوك الصحي',
+            'تجمع تبوك الطبي', 'الشؤون الصحية', 'المديرية العامة للشؤون الصحية'
+        ];
+        foreach ($strictHealthContext as $hc) {
             if (mb_stripos($normContent, self::normalize($hc)) !== false) {
                 return false;
             }
@@ -410,7 +550,7 @@ class KeywordRelevanceFilter
                 return true;
             }
 
-            $anchors = self::extractValidationAnchors($kw);
+            $anchors = self::extractValidationAnchors($kw, $cleanKeywords);
 
             // Check multi-word anchor phrases
             foreach ($anchors['phrases'] as $phrase) {

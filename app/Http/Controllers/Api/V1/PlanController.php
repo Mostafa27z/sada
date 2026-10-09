@@ -59,7 +59,10 @@ class PlanController extends Controller
             'limits.max_sources' => ['sometimes', 'nullable', 'integer'],
             'limits.max_articles' => ['sometimes', 'nullable', 'integer'],
             'limits.max_api_requests' => ['sometimes', 'nullable', 'integer'],
+            'limits.max_campaigns' => ['sometimes', 'nullable', 'integer'],
+            'limits.max_articles_per_campaign' => ['sometimes', 'nullable', 'integer'],
             'features' => ['sometimes', 'nullable', 'array'],
+            'has_news' => ['sometimes', 'boolean'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
@@ -75,7 +78,10 @@ class PlanController extends Controller
             'max_sources' => $validated['limits']['max_sources'] ?? $request->input('max_sources', 50),
             'max_articles' => $validated['limits']['max_articles'] ?? $request->input('max_articles', 10000),
             'max_api_requests' => $validated['limits']['max_api_requests'] ?? $request->input('max_api_requests', 1000),
+            'max_campaigns' => $validated['limits']['max_campaigns'] ?? $request->input('max_campaigns', 10),
+            'max_articles_per_campaign' => $validated['limits']['max_articles_per_campaign'] ?? $request->input('max_articles_per_campaign', 100),
             'features' => $validated['features'] ?? [],
+            'has_news' => $validated['has_news'] ?? $request->input('has_news', false),
             'is_active' => $validated['is_active'] ?? true,
         ];
 
@@ -104,6 +110,7 @@ class PlanController extends Controller
             'billing_interval' => ['sometimes', 'string'],
             'limits' => ['sometimes', 'nullable', 'array'],
             'features' => ['sometimes', 'nullable', 'array'],
+            'has_news' => ['sometimes', 'boolean'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
@@ -114,6 +121,8 @@ class PlanController extends Controller
             if (isset($limits['max_sources'])) $plan->max_sources = $limits['max_sources'];
             if (isset($limits['max_articles'])) $plan->max_articles = $limits['max_articles'];
             if (isset($limits['max_api_requests'])) $plan->max_api_requests = $limits['max_api_requests'];
+            if (isset($limits['max_campaigns'])) $plan->max_campaigns = $limits['max_campaigns'];
+            if (isset($limits['max_articles_per_campaign'])) $plan->max_articles_per_campaign = $limits['max_articles_per_campaign'];
         }
 
         if (isset($validated['name'])) $plan->name = $validated['name'];
@@ -123,6 +132,7 @@ class PlanController extends Controller
         if (isset($validated['currency'])) $plan->currency = $validated['currency'];
         if (isset($validated['billing_interval'])) $plan->billing_interval = $validated['billing_interval'];
         if (isset($validated['features'])) $plan->features = $validated['features'];
+        if (isset($validated['has_news'])) $plan->has_news = $validated['has_news'];
         if (isset($validated['is_active'])) $plan->is_active = $validated['is_active'];
 
         $plan->save();

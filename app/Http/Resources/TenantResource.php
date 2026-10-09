@@ -18,13 +18,7 @@ class TenantResource extends JsonResource
             'status' => $this->status,
             'is_owner' => $this->pivot?->is_owner ?? false,
             'settings' => $this->settings,
-            'plan' => $this->plan ? [
-                'id' => $this->plan->id,
-                'name' => $this->plan->name,
-                'slug' => $this->plan->slug,
-                'price' => $this->plan->price,
-                'features' => $this->plan->features,
-            ] : null,
+            'plan' => $this->plan ? new PlanResource($this->plan) : null,
             'subscription' => $this->subscription ? [
                 'id' => $this->subscription->id,
                 'status' => $this->subscription->status,

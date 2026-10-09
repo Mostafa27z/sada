@@ -23,8 +23,11 @@ class PlanResource extends JsonResource
                 'max_sources' => $this->max_sources,
                 'max_articles' => $this->max_articles,
                 'max_api_requests' => $this->max_api_requests,
+                'max_campaigns' => $this->max_campaigns ?? 5,
+                'max_articles_per_campaign' => $this->max_articles_per_campaign ?? 25,
             ],
             'features' => $this->features,
+            'has_news' => (bool) ($this->has_news ?? false),
             'is_active' => $this->is_active,
         ];
     }

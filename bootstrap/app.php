@@ -27,6 +27,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'active' => \App\Http\Middleware\EnsureUserIsActive::class,
             'tenant' => \App\Http\Middleware\ResolveTenant::class,
             'limit' => \App\Http\Middleware\CheckUsageLimit::class,
+            'feature' => \App\Http\Middleware\EnsureFeatureAccess::class,
             'webhook.signature' => \App\Http\Middleware\VerifyWebhookSignature::class,
             'api.key' => \App\Http\Middleware\AuthenticateApiKey::class,
         ]);

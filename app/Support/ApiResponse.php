@@ -49,7 +49,7 @@ trait ApiResponse
     /**
      * Return a paginated response.
      */
-    protected function paginated(LengthAwarePaginator $paginator, string $resourceClass, array $extraMeta = []): JsonResponse
+    protected function paginated(LengthAwarePaginator $paginator, ?string $resourceClass = null, array $extraMeta = []): JsonResponse
     {
         $meta = [
             'current_page' => $paginator->currentPage(),
@@ -62,10 +62,12 @@ trait ApiResponse
             $meta = array_merge($meta, $extraMeta);
         }
 
+        $items = $resourceClass ? $resourceClass::collection($paginator->items()) : $paginator->items();
+
         return response()->json([
             'success' => true,
             'message' => null,
-            'data' => $resourceClass::collection($paginator->items()),
+            'data' => $items,
             'meta' => $meta,
         ]);
     }

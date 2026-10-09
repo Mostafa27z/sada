@@ -23,13 +23,113 @@ class SuperAdminController extends Controller
     use ApiResponse;
 
     /**
-     * List all tenants across the system for Super Admin.
+     * List all tenants across the system for Super Admin with optional status filter.
      */
-    public function tenants()
+    public function tenants(Request $request)
     {
-        $tenants = TenantContext::withoutTenancy(fn () => Tenant::with(['subscription.plan'])->latest()->paginate(20));
+        $tenants = TenantContext::withoutTenancy(function () use ($request) {
+            $query = Tenant::with(['subscription.plan'])->latest();
+
+            if ($request->filled('status') && $request->status !== 'all') {
+                $query->where('status', $request->status);
+            }
+
+            return $query->paginate(20);
+        });
 
         return $this->paginated($tenants, TenantResource::class);
+    }
+
+    /**
+     * Approve a suspended company registration and activate 5-day trial.
+     */
+    public function approveTenant(Request $request, int $tenantId): JsonResponse
+    {
+        $tenant = TenantContext::withoutTenancy(fn () => Tenant::find($tenantId));
+
+        if (!$tenant) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        return DB::transaction(function () use ($tenant) {
+            $planId = $tenant->plan_id ?? Plan::where('slug', 'basic')->first()?->id ?? Plan::first()?->id;
+
+            // 1. Activate tenant on 5-day trial
+            $tenant->update([
+                'status' => Tenant::STATUS_TRIAL,
+                'plan_id' => $planId,
+                'trial_ends_at' => now()->addDays(5),
+            ]);
+
+            // 2. Activate owner user
+            $owner = $tenant->owner();
+            if ($owner) {
+                $owner->update(['status' => User::STATUS_ACTIVE]);
+            }
+
+            // 3. Create or update trial subscription
+            Subscription::updateOrCreate(
+                ['tenant_id' => $tenant->id],
+                [
+                    'plan_id' => $planId,
+                    'status' => Subscription::STATUS_TRIAL,
+                    'starts_at' => now(),
+                    'trial_ends_at' => now()->addDays(5),
+                    'ends_at' => now()->addDays(5),
+                ]
+            );
+
+            // 4. Trigger Automated Intelligence Pipeline for Country & Sector
+            $settings = $tenant->settings ?? [];
+            try {
+                \App\Jobs\InitializeTenantIntelligenceJob::dispatch(
+                    tenantId:           $tenant->id,
+                    companyName:        $tenant->name,
+                    country:            $settings['country'] ?? 'المملكة العربية السعودية',
+                    city:               $settings['city'] ?? null,
+                    industry:           $settings['industry'] ?? '',
+                    companyDescription: $settings['company_description'] ?? null,
+                    userId:             $owner?->id
+                );
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed to dispatch InitializeTenantIntelligenceJob on approval: ' . $e->getMessage());
+            }
+
+            return $this->success(new TenantResource($tenant->fresh(['subscription.plan'])), __('messages.tenant_approved_trial'));
+        });
+    }
+
+    /**
+     * Reject a suspended company registration.
+     */
+    public function rejectTenant(Request $request, int $tenantId): JsonResponse
+    {
+        $validated = $request->validate([
+            'reason' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        $tenant = TenantContext::withoutTenancy(fn () => Tenant::find($tenantId));
+
+        if (!$tenant) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        $settings = $tenant->settings ?? [];
+        if (isset($validated['reason'])) {
+            $settings['rejection_reason'] = $validated['reason'];
+        }
+
+        $tenant->update([
+            'status' => Tenant::STATUS_CANCELLED,
+            'settings' => $settings,
+        ]);
+
+        $owner = $tenant->owner();
+        if ($owner) {
+            $owner->update(['status' => User::STATUS_INACTIVE]);
+        }
+
+        return $this->success(null, 'Tenant rejected successfully');
     }
 
     /**
@@ -333,16 +433,121 @@ class SuperAdminController extends Controller
     public function triggerBackup(Request $request): JsonResponse
     {
         $filename = 'sada_backup_' . now()->format('Y_m_d_His') . '.sql.gz';
+        $backupDir = storage_path('app/backups');
+        if (!file_exists($backupDir)) {
+            mkdir($backupDir, 0755, true);
+        }
+
+        $filePath = $backupDir . DIRECTORY_SEPARATOR . $filename;
+        $sql = $this->generateDatabaseDumpSql();
+        $compressed = gzencode($sql, 9);
+        file_put_contents($filePath, $compressed);
+        $sizeBytes = file_exists($filePath) ? filesize($filePath) : strlen($compressed);
 
         $backup = SystemBackup::create([
             'filename' => $filename,
             'disk' => 'local',
-            'size_bytes' => rand(10000000, 30000000),
+            'size_bytes' => $sizeBytes,
             'status' => 'completed',
             'triggered_by' => $request->user()?->name ?? 'Super Admin',
         ]);
 
         return $this->created($backup, 'Database backup created successfully');
+    }
+
+    /**
+     * Download database backup snapshot file.
+     */
+    public function downloadBackup(int $id)
+    {
+        $backup = SystemBackup::find($id);
+        if (!$backup) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        $backupDir = storage_path('app/backups');
+        $filePath = $backupDir . DIRECTORY_SEPARATOR . $backup->filename;
+
+        if (!file_exists($filePath)) {
+            if (!file_exists($backupDir)) {
+                mkdir($backupDir, 0755, true);
+            }
+            $sql = $this->generateDatabaseDumpSql();
+            $compressed = gzencode($sql, 9);
+            file_put_contents($filePath, $compressed);
+        }
+
+        return response()->download($filePath, $backup->filename, [
+            'Content-Type' => 'application/gzip',
+        ]);
+    }
+
+    /**
+     * Generate actual SQL dump of the database.
+     */
+    protected function generateDatabaseDumpSql(): string
+    {
+        $connection = DB::connection();
+        $databaseName = $connection->getDatabaseName();
+
+        $sql = "-- Sada System Database Backup\n";
+        $sql .= "-- Generated: " . now()->toDateTimeString() . "\n";
+        $sql .= "-- Database: " . $databaseName . "\n\n";
+        $sql .= "SET FOREIGN_KEY_CHECKS=0;\n\n";
+
+        $driver = $connection->getDriverName();
+        if ($driver === 'sqlite') {
+            $tables = DB::select("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+            foreach ($tables as $t) {
+                $tableName = $t->name;
+                $create = DB::select("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", [$tableName]);
+                $sql .= "DROP TABLE IF EXISTS `{$tableName}`;\n";
+                if (!empty($create)) {
+                    $sql .= $create[0]->sql . ";\n\n";
+                }
+                $rows = DB::table($tableName)->get();
+                foreach ($rows as $row) {
+                    $arr = (array)$row;
+                    $cols = '`' . implode('`, `', array_keys($arr)) . '`';
+                    $vals = array_map(function ($val) {
+                        return is_null($val) ? 'NULL' : "'" . addslashes((string)$val) . "'";
+                    }, array_values($arr));
+                    $sql .= "INSERT INTO `{$tableName}` ({$cols}) VALUES (" . implode(', ', $vals) . ");\n";
+                }
+                $sql .= "\n";
+            }
+        } else {
+            $tables = DB::select('SHOW TABLES');
+            foreach ($tables as $tableObj) {
+                $tableName = array_values((array)$tableObj)[0];
+                $createTable = DB::select("SHOW CREATE TABLE `{$tableName}`");
+                if (!empty($createTable)) {
+                    $createSql = ((array)$createTable[0])['Create Table'] ?? '';
+                    $sql .= "DROP TABLE IF EXISTS `{$tableName}`;\n";
+                    $sql .= $createSql . ";\n\n";
+                }
+                $rows = DB::table($tableName)->get();
+                if ($rows->isNotEmpty()) {
+                    foreach ($rows->chunk(100) as $chunk) {
+                        $values = [];
+                        foreach ($chunk as $row) {
+                            $rowValues = array_map(function ($val) {
+                                if (is_null($val)) return 'NULL';
+                                return "'" . addslashes((string)$val) . "'";
+                            }, (array)$row);
+                            $values[] = '(' . implode(', ', $rowValues) . ')';
+                        }
+                        $columns = array_keys((array)$chunk->first());
+                        $columnsStr = '`' . implode('`, `', $columns) . '`';
+                        $sql .= "INSERT INTO `{$tableName}` ({$columnsStr}) VALUES \n" . implode(",\n", $values) . ";\n";
+                    }
+                    $sql .= "\n";
+                }
+            }
+        }
+
+        $sql .= "SET FOREIGN_KEY_CHECKS=1;\n";
+        return $sql;
     }
 
     /**

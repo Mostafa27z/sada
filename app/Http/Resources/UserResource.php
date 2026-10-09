@@ -38,13 +38,7 @@ class UserResource extends JsonResource
                 'logo' => $tenant->logo,
                 'status' => $tenant->status,
                 'settings' => $tenant->settings,
-                'plan' => $tenant->plan ? [
-                    'id' => $tenant->plan->id,
-                    'name' => $tenant->plan->name,
-                    'slug' => $tenant->plan->slug,
-                    'price' => $tenant->plan->price,
-                    'features' => $tenant->plan->features,
-                ] : null,
+                'plan' => $tenant->plan ? new PlanResource($tenant->plan) : null,
                 'subscription' => $tenant->subscription ? [
                     'id' => $tenant->subscription->id,
                     'status' => $tenant->subscription->status,

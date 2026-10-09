@@ -22,7 +22,10 @@ class Plan extends Model
         'max_sources',
         'max_articles',
         'max_api_requests',
+        'max_campaigns',
+        'max_articles_per_campaign',
         'features',
+        'has_news',
         'is_active',
     ];
 
@@ -33,12 +36,25 @@ class Plan extends Model
         'max_sources' => 'integer',
         'max_articles' => 'integer',
         'max_api_requests' => 'integer',
+        'max_campaigns' => 'integer',
+        'max_articles_per_campaign' => 'integer',
         'features' => 'array',
+        'has_news' => 'boolean',
         'is_active' => 'boolean',
     ];
 
     public function subscriptions(): HasMany
     {
         return $this->hasMany(Subscription::class);
+    }
+
+    public function planRequests(): HasMany
+    {
+        return $this->hasMany(PlanRequest::class);
+    }
+
+    public function hasNews(): bool
+    {
+        return (bool) $this->has_news;
     }
 }

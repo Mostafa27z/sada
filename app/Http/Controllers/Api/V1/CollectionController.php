@@ -110,8 +110,30 @@ class CollectionController extends Controller
 
     public function store(StoreCollectionRequest $request)
     {
+        $tenant = \App\Support\TenantContext::getTenant();
+        $isTrial = $tenant && $tenant->isTrial();
+
+        // 1. Enforce maximum campaigns limit (Trial: max 5 campaigns)
+        if ($tenant) {
+            $maxCampaigns = $isTrial ? 5 : ($tenant->plan?->max_campaigns ?? 50);
+            $currentCount = Collection::where('tenant_id', $tenant->id)->count();
+            if ($currentCount >= $maxCampaigns) {
+                return $this->error($isTrial ? __('messages.trial_campaign_limit_reached') : 'وصلت إلى الحد الأقصى المسموح به للحملات.', 403);
+            }
+        }
+
         $data = $request->validated();
         $data['created_by'] = $request->user()->id;
+
+        // 2. Enforce comments/articles limit per campaign (Trial: max 25)
+        $rawCommentsLimit = (int) ($data['comments_limit'] ?? 50);
+        if ($isTrial) {
+            $commentsLimit = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 25, 25);
+        } else {
+            $maxPerCampaign = $tenant?->plan?->max_articles_per_campaign ?? 1000;
+            $commentsLimit = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 50, $maxPerCampaign);
+        }
+        $data['comments_limit'] = $commentsLimit;
 
         if (array_key_exists('keywords', $data)) {
             if (is_array($data['keywords'])) {
@@ -137,7 +159,6 @@ class CollectionController extends Controller
         $data['status'] = Collection::STATUS_PENDING;
         $collection = Collection::create($data);
 
-        $commentsLimit = $data['comments_limit'] ?? 50;
         $this->syncLinkArticleAndComments($collection, $commentsLimit);
         $this->triggerKeywordScrapeIfApplicable($collection, $data);
 
@@ -201,11 +222,40 @@ class CollectionController extends Controller
             }
         }
 
+        $tenant = \App\Support\TenantContext::getTenant();
+        $isTrial = $tenant && $tenant->isTrial();
+        $hasData = $collection->articles()->count() > 0 || $collection->status === Collection::STATUS_COMPLETED;
+
+        // If campaign has already been analyzed, lock immutable fields to prevent re-scraping abuse
+        if ($hasData) {
+            unset(
+                $data['keywords'],
+                $data['keyword'],
+                $data['link'],
+                $data['platform'],
+                $data['platforms'],
+                $data['comments_limit'],
+                $data['country'],
+                $data['date_from'],
+                $data['date_to']
+            );
+            $collection->update($data);
+            return $this->success(new CollectionResource($collection->fresh(['articles.comments'])), __('messages.updated'));
+        }
+
+        $rawCommentsLimit = (int) ($data['comments_limit'] ?? $collection->comments_limit ?? 50);
+        if ($isTrial) {
+            $commentsLimit = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 25, 25);
+        } else {
+            $maxPerCampaign = $tenant?->plan?->max_articles_per_campaign ?? 1000;
+            $commentsLimit = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 50, $maxPerCampaign);
+        }
+        $data['comments_limit'] = $commentsLimit;
+
         $data['status'] = Collection::STATUS_PENDING;
         $data['error_message'] = null;
         $collection->update($data);
 
-        $commentsLimit = $data['comments_limit'] ?? 50;
         $this->syncLinkArticleAndComments($collection, $commentsLimit);
         $this->triggerKeywordScrapeIfApplicable($collection, $data);
 
@@ -316,15 +366,7 @@ class CollectionController extends Controller
 
     public function destroy(int $id)
     {
-        $collection = Collection::find($id);
-
-        if (!$collection) {
-            return $this->error(__('messages.not_found'), 404);
-        }
-
-        $collection->delete();
-
-        return $this->success(null, __('messages.deleted'));
+        return $this->error('غير مسموح بحذف الحملات أو التحليلات بعد إنشائها للحفاظ على سجل الرصد والحدود الاستهلاكية للباقة.', 403);
     }
 
     public function sync(int $id)
@@ -333,6 +375,15 @@ class CollectionController extends Controller
 
         if (!$collection) {
             return $this->error(__('messages.not_found'), 404);
+        }
+
+        // Prevent re-generating / re-syncing if analysis already completed or has scraped results
+        if ($collection->status === Collection::STATUS_COMPLETED || $collection->articles()->count() > 0) {
+            return $this->error('تم إنجاز التحليل مسبقاً لهذه الحملة ولا يمكن إعادة التوليد لتجنب استهلاك الحصة. يمكنك إنشاء حملة جديدة ضمن حدود باقتك.', 403);
+        }
+
+        if ($collection->status === Collection::STATUS_PENDING) {
+            return $this->error('التحليل قيد التنفيذ حالياً، يرجى الانتظار حتى اكتمال المعالجة.', 429);
         }
 
         $collection->update([

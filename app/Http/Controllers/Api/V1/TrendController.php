@@ -10,6 +10,9 @@ use App\Models\Trend;
 use App\Services\TrendService;
 use App\Support\ApiResponse;
 use App\Support\TenantContext;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class TrendController extends Controller
 {
@@ -155,21 +158,74 @@ class TrendController extends Controller
 
     /**
      * Synthesize all monitored trend posts into a unified Master Trend Post.
+     * Enforces strict limit of 3 generations per topic/tenant per day.
      */
-    public function generateMasterPost(\Illuminate\Http\Request $request, \App\Services\GeminiAnalyticsService $geminiService)
-    {
-        $request->validate([
-            'topic' => ['required', 'string'],
-            'posts' => ['required', 'array'],
-            'tone' => ['sometimes', 'nullable', 'string'],
-        ]);
-
-        $result = $geminiService->generateMasterTrendPost(
-            $request->input('topic'),
-            $request->input('posts', []),
-            $request->input('tone')
-        );
-
-        return $this->success($result, 'Master trend post generated successfully.');
-    }
+     public function generateMasterPost(Request $request, \App\Services\GeminiAnalyticsService $geminiService)
+     {
+         $request->validate([
+             'topic' => ['required', 'string'],
+             'posts' => ['required', 'array'],
+             'tone' => ['sometimes', 'nullable', 'string'],
+         ]);
+ 
+         $tenantId = TenantContext::getTenantId() ?? $request->user()?->current_tenant_id ?? $request->user()?->tenant_id ?? 'global';
+         $topic = trim($request->input('topic'));
+         $topicKey = md5(mb_strtolower($topic));
+         $todayKsa = Carbon::now('Asia/Riyadh')->toDateString();
+         $cacheKey = "master_post_gen_{$tenantId}_{$topicKey}_{$todayKsa}";
+         $maxGenerations = 3;
+ 
+         $usedCount = (int) Cache::get($cacheKey, 0);
+ 
+         if ($usedCount >= $maxGenerations) {
+             return $this->error(
+                 'لقد استنفدت الحد المسموح به لتوليد المحتوى بالذكاء الاصطناعي لهذا الموضوع (3 مرات كحد أقصى يومياً). يرجى المحاولة غداً أو اختيار موضوع آخر.',
+                 429,
+                 [
+                     'code' => 'generation_limit_exceeded',
+                     'generations_used' => $usedCount,
+                     'max_generations' => $maxGenerations,
+                     'generations_left' => 0,
+                 ]
+             );
+         }
+ 
+         $result = $geminiService->generateMasterTrendPost(
+             $topic,
+             $request->input('posts', []),
+             $request->input('tone')
+         );
+ 
+         $newCount = $usedCount + 1;
+         $secondsUntilMidnight = (int) max(60, Carbon::now('Asia/Riyadh')->diffInSeconds(Carbon::now('Asia/Riyadh')->endOfDay()) + 60);
+         Cache::put($cacheKey, $newCount, $secondsUntilMidnight);
+         $generationsLeft = max(0, $maxGenerations - $newCount);
+ 
+         $result['generations_left'] = $generationsLeft;
+         $result['generations_used'] = $newCount;
+         $result['max_generations'] = $maxGenerations;
+ 
+         return $this->success($result, 'Master trend post generated successfully.');
+     }
+ 
+     /**
+      * Get remaining quota for master post generation on a topic today.
+      */
+     public function masterPostStatus(Request $request)
+     {
+         $tenantId = TenantContext::getTenantId() ?? $request->user()?->current_tenant_id ?? $request->user()?->tenant_id ?? 'global';
+         $topic = trim((string) $request->query('topic', ''));
+         $topicKey = md5(mb_strtolower($topic));
+         $todayKsa = Carbon::now('Asia/Riyadh')->toDateString();
+         $cacheKey = "master_post_gen_{$tenantId}_{$topicKey}_{$todayKsa}";
+         $maxGenerations = 3;
+ 
+         $usedCount = (int) Cache::get($cacheKey, 0);
+ 
+         return $this->success([
+             'generations_used' => $usedCount,
+             'generations_left' => max(0, $maxGenerations - $usedCount),
+             'max_generations' => $maxGenerations,
+         ]);
+     }
 }

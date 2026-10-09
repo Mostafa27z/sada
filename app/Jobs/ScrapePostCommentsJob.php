@@ -322,4 +322,23 @@ class ScrapePostCommentsJob implements ShouldQueue
 
         TenantContext::forgetTenant();
     }
+
+    public function failed(\Throwable $exception): void
+    {
+        Log::error("ScrapePostCommentsJob permanently failed for tenant {$this->tenantId}: " . $exception->getMessage(), [
+            'exception' => $exception,
+        ]);
+
+        if ($this->collectionId) {
+            Collection::withoutGlobalScopes()
+                ->where('id', $this->collectionId)
+                ->where('status', '!=', Collection::STATUS_COMPLETED)
+                ->update([
+                    'status' => Collection::STATUS_FAILED,
+                    'error_message' => 'حدث خطأ أثناء جمع التعليقات: ' . $exception->getMessage(),
+                ]);
+        }
+
+        TenantContext::forgetTenant();
+    }
 }

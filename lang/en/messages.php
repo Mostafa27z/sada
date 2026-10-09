@@ -10,6 +10,7 @@ return [
 
     // Auth
     'registration_successful' => 'Registration successful.',
+    'registration_pending_approval' => 'Registration submitted successfully. Your account is pending Super Admin review.',
     'login_successful' => 'Login successful.',
     'logout_successful' => 'Logged out successfully.',
     'logout_all_successful' => 'Logged out from all devices successfully.',
@@ -23,8 +24,18 @@ return [
 
     // Account status
     'account_suspended' => 'Your account has been suspended. Please contact support.',
+    'account_pending_approval' => 'Your account is currently under review by the administration.',
     'account_inactive' => 'Your account is inactive. Please contact support.',
     'account_not_active' => 'Your account is not active.',
+    'trial_expired' => 'Your 5-day trial has expired. Please select a plan to continue.',
+    'trial_campaign_limit_reached' => 'You have reached the trial campaign limit (maximum 5 campaigns).',
+    'trial_comments_limit_reached' => 'The trial limit per campaign is maximum 25 comments or articles.',
+    'feature_not_included' => 'The feature (:feature) is not included in your current plan.',
+    'news_feature_not_included' => 'Industry News Radar is a premium feature not included in your plan. Please upgrade to access it.',
+    'plan_request_submitted' => 'Plan request submitted successfully and is pending admin approval.',
+    'plan_request_approved' => 'Plan request approved successfully.',
+    'plan_request_rejected' => 'Plan request has been rejected.',
+    'tenant_approved_trial' => 'Company approved and 5-day trial period activated successfully.',
 
     // Errors
     'validation_failed' => 'Validation failed.',

@@ -59,11 +59,12 @@ class RegisterTest extends TestCase
 
         $this->assertDatabaseHas('users', [
             'email' => 'ahmed@example.com',
-            'status' => 'active',
+            'status' => 'suspended',
         ]);
 
         $this->assertDatabaseHas('tenants', [
             'name' => 'شركة صدى للذكاء الاصطناعي',
+            'status' => 'suspended',
         ]);
     }
 
@@ -119,16 +120,16 @@ class RegisterTest extends TestCase
             ->assertJsonValidationErrors(['name', 'email', 'password', 'company_name']);
     }
 
-    public function test_token_is_returned_on_registration(): void
+    public function test_token_is_returned_on_registration_and_access_is_restricted_while_suspended(): void
     {
         $response = $this->postJson('/api/v1/auth/register', $this->validRegistrationData());
 
         $token = $response->json('data.token');
         $this->assertNotEmpty($token);
 
-        // Verify the token works
+        // Verify that suspended account cannot access protected endpoints before super admin approval
         $this->getJson('/api/v1/me', [
             'Authorization' => 'Bearer ' . $token,
-        ])->assertOk();
+        ])->assertStatus(403);
     }
 }

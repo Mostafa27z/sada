@@ -65,27 +65,25 @@ class RegisterUser
             $logoUrl = $this->storeImage($data['logo'] ?? null, 'logos');
             $avatarUrl = $this->storeImage($data['avatar'] ?? null, 'avatars');
 
-            // 1. Create User
+            // 1. Create User (Suspended until Super Admin reviews and approves)
             $user = User::create([
                 'name' => $data['name'],
                 'email' => $data['email'],
                 'password' => $data['password'], // Hashed by the model cast
                 'avatar' => $avatarUrl,
-                'status' => User::STATUS_ACTIVE,
+                'status' => User::STATUS_SUSPENDED,
             ]);
 
-            // 2. Fetch default plan
-            $defaultPlan = Plan::where('slug', 'basic')->first() ?? Plan::first();
-
-            // 3. Create Tenant
+            // 2. Create Tenant (Suspended, pending Super Admin review)
             $companyName = $data['company_name'];
-            $tenant = TenantContext::withoutTenancy(function () use ($companyName, $defaultPlan, $data, $logoUrl) {
+            $tenant = TenantContext::withoutTenancy(function () use ($companyName, $data, $logoUrl) {
                 return Tenant::create([
                     'name' => $companyName,
                     'slug' => Str::slug($companyName) . '-' . Str::random(5),
                     'logo' => $logoUrl,
-                    'status' => Tenant::STATUS_TRIAL,
-                    'plan_id' => $defaultPlan?->id,
+                    'status' => Tenant::STATUS_SUSPENDED,
+                    'plan_id' => null,
+                    'trial_ends_at' => null,
                     'settings' => [
                         'company_email'       => $data['company_email'] ?? null,
                         'phone'               => $data['phone'] ?? null,
@@ -98,14 +96,14 @@ class RegisterUser
                 ]);
             });
 
-            // 4. Attach user as Tenant Owner
+            // 3. Attach user as Tenant Owner
             $ownerRole = Role::where('slug', Role::TENANT_OWNER)->first();
             $tenant->users()->attach($user->id, [
                 'role_id' => $ownerRole?->id,
                 'is_owner' => true,
             ]);
 
-            // 5. Set as user's current tenant
+            // 4. Set as user's current tenant
             $user->forceFill(['current_tenant_id' => $tenant->id])->save();
 
             try {
@@ -114,22 +112,9 @@ class RegisterUser
                 \Illuminate\Support\Facades\Log::warning('Failed to send registration email: ' . $e->getMessage());
             }
 
-            // 6. Trigger Automated Intelligence Pipeline for Country & Sector
-            try {
-                \App\Jobs\InitializeTenantIntelligenceJob::dispatch(
-                    tenantId:           $tenant->id,
-                    companyName:        $companyName,
-                    country:            $data['country'] ?? 'المملكة العربية السعودية',
-                    city:               $data['city'] ?? null,
-                    industry:           $data['industry'] ?? '',
-                    companyDescription: $data['company_description'] ?? null,
-                    userId:             $user->id
-                );
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('Failed to dispatch InitializeTenantIntelligenceJob: ' . $e->getMessage());
-            }
+            // Note: InitializeTenantIntelligenceJob is triggered only AFTER Super Admin approves the tenant.
 
-            // 7. Generate access token
+            // 5. Generate access token
             $token = $user->createToken(
                 config('sada.token.name', 'api-token')
             )->plainTextToken;

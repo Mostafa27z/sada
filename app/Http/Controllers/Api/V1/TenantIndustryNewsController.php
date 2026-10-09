@@ -12,6 +12,7 @@ use App\Support\TenantContext;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class TenantIndustryNewsController extends Controller
 {
@@ -59,12 +60,21 @@ class TenantIndustryNewsController extends Controller
         // Today's Top 10 items
         $items = (clone $baseQuery)->orderBy('rank', 'asc')->limit(10)->get();
 
+        // Compute daily manual refresh quota (max 3 times daily per tenant)
+        $maxTriggers = 3;
+        $triggersCacheKey = "industry_news_triggers_{$tenantId}_{$todayKsa}";
+        $usedTriggers = (int) Cache::get($triggersCacheKey, 0);
+        $triggersLeft = max(0, $maxTriggers - $usedTriggers);
+
         return $this->success([
             'batch_date' => $targetDate,
             'is_today' => ($targetDate === $todayKsa),
             'count' => $items->count(),
             'total' => $total,
             'items' => $items,
+            'triggers_left' => $triggersLeft,
+            'triggers_used' => $usedTriggers,
+            'max_triggers' => $maxTriggers,
             'stats' => [
                 'total' => $total,
                 'acted' => $acted,
@@ -157,15 +167,39 @@ class TenantIndustryNewsController extends Controller
 
     /**
      * Trigger immediate real-time fetch of today's industry news for this tenant.
+     * Enforces strict limit of 3 manual triggers per day per tenant.
      */
     public function trigger(Request $request, IndustryNewsService $service): JsonResponse
     {
-        $tenantId = TenantContext::getTenantId();
-        $tenant = Tenant::find($tenantId);
+        $tenantId = TenantContext::getTenantId() ?? $request->user()?->current_tenant_id ?? $request->user()?->tenant_id;
+        $tenant = $tenantId ? Tenant::find($tenantId) : null;
 
         if (!$tenant) {
             return $this->error(__('messages.forbidden'), 403);
         }
+
+        $todayKsa = Carbon::now('Asia/Riyadh')->toDateString();
+        $triggersCacheKey = "industry_news_triggers_{$tenant->id}_{$todayKsa}";
+        $maxTriggers = 3;
+        $usedCount = (int) Cache::get($triggersCacheKey, 0);
+
+        if ($usedCount >= $maxTriggers) {
+            return $this->error(
+                'لقد استنفدت الحد اليومي المسموح به لتحديث رادار الأخبار يدوياً (3 مرات كحد أقصى يومياً). يتم التحديث الآلي للنشرة تلقائياً كل يوم الساعة 8:00 مساءً.',
+                429,
+                [
+                    'code' => 'trigger_limit_exceeded',
+                    'triggers_used' => $usedCount,
+                    'max_triggers' => $maxTriggers,
+                    'triggers_left' => 0,
+                ]
+            );
+        }
+
+        $newCount = $usedCount + 1;
+        $secondsUntilMidnight = (int) max(60, Carbon::now('Asia/Riyadh')->diffInSeconds(Carbon::now('Asia/Riyadh')->endOfDay()) + 60);
+        Cache::put($triggersCacheKey, $newCount, $secondsUntilMidnight);
+        $triggersLeft = max(0, $maxTriggers - $newCount);
 
         $isSync = $request->boolean('sync', false);
 
@@ -174,11 +208,18 @@ class TenantIndustryNewsController extends Controller
             return $this->success([
                 'count' => count($items),
                 'items' => $items,
+                'triggers_left' => $triggersLeft,
+                'triggers_used' => $newCount,
+                'max_triggers' => $maxTriggers,
             ], 'تم جلب وتحليل أهم أخبار القطاع وصياغة المقترحات بنجاح');
         }
 
         FetchTenantIndustryNewsJob::dispatch($tenant->id);
 
-        return $this->success(null, 'تم إرسال مهمة رصد أخبار القطاع إلى المعالجة الخلفية');
+        return $this->success([
+            'triggers_left' => $triggersLeft,
+            'triggers_used' => $newCount,
+            'max_triggers' => $maxTriggers,
+        ], 'تم إرسال مهمة رصد أخبار القطاع إلى المعالجة الخلفية');
     }
 }

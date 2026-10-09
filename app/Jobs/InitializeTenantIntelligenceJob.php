@@ -174,10 +174,12 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
             $this->scrapeAndSaveRealArticles($tenant, $brandCollection, $sectorCollection, $countryCode, $scraper);
         });
         
-        try {
-            \App\Jobs\FetchTenantIndustryNewsJob::dispatch($this->tenantId);
-        } catch (\Throwable $e) {
-            Log::warning("Failed to dispatch FetchTenantIndustryNewsJob for tenant #{$this->tenantId}: " . $e->getMessage());
+        if ($tenant->plan && $tenant->plan->has_news) {
+            try {
+                \App\Jobs\FetchTenantIndustryNewsJob::dispatch($this->tenantId);
+            } catch (\Throwable $e) {
+                Log::warning("Failed to dispatch FetchTenantIndustryNewsJob for tenant #{$this->tenantId}: " . $e->getMessage());
+            }
         }
 
         Log::info("Automated Intelligence successfully seeded for Tenant #{$this->tenantId}");

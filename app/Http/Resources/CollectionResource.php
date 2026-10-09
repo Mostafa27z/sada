@@ -88,6 +88,16 @@ class CollectionResource extends JsonResource
             }
         }
         $reach = $primaryArticle?->raw_data['reach'] ?? null;
+        if ($articles->isNotEmpty()) {
+            $totalReach = 0;
+            foreach ($articles as $art) {
+                $r = $art->reach ?? $art->raw_data['reach'] ?? $art->raw_data['views'] ?? 0;
+                $totalReach += (int) preg_replace('/[^\d]/', '', (string)$r);
+            }
+            if ($totalReach > 0) {
+                $reach = number_format($totalReach);
+            }
+        }
         if (empty($reach) && !empty($primaryArticle?->raw_data['views'])) {
             $reach = number_format((int)$primaryArticle->raw_data['views']);
         }

@@ -47,7 +47,7 @@ class AuthController extends Controller
             'user' => new UserResource($result['user']),
             'token' => $result['token'],
             'tenant' => new TenantResource($result['tenant']),
-        ], __('messages.registration_successful'), 201);
+        ], __('messages.registration_pending_approval'), 201);
     }
 
     /*

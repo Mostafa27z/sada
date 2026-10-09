@@ -63,6 +63,14 @@ class ResolveTenant
                 ], 403);
             }
 
+            if ($tenant->isTrialExpired() && !in_array($request->method(), ['GET', 'HEAD']) && !$request->is('*/plans/request*')) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'trial_expired',
+                    'message' => __('messages.trial_expired'),
+                ], 403);
+            }
+
             TenantContext::setTenant($tenant);
 
             // Sync user's current_tenant_id if different

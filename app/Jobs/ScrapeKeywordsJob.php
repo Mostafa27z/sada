@@ -43,6 +43,7 @@ class ScrapeKeywordsJob implements ShouldQueue
         TenantContext::setTenant($tenant);
 
         $rubric = null;
+        $col = null;
         if ($this->collectionId) {
             $col = Collection::withoutGlobalScopes()->find($this->collectionId);
             $rubric = $col?->getEffectiveRubric();
@@ -106,7 +107,7 @@ class ScrapeKeywordsJob implements ShouldQueue
                     $rawTitle = trim($post['title'] ?? '');
 
                     // Strict Keyword Relevance Check
-                    if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($content . ' ' . $rawTitle . ' ' . $rawAuthor, $this->keywords)) {
+                    if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($content . ' ' . $rawTitle . ' ' . $rawAuthor, $this->keywords, $col?->name ?? null)) {
                         continue;
                     }
 
@@ -154,6 +155,11 @@ class ScrapeKeywordsJob implements ShouldQueue
                     }
                     $title = mb_substr($content ?: $author, 0, 200);
 
+                    // Strict Keyword Relevance Check
+                    if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($content . ' ' . $title, $this->keywords, $col?->name ?? null)) {
+                        continue;
+                    }
+
                     $postId = md5((string)$post);
                     $externalId = "{$platformName}_{$postId}";
                     $url = 'https://news.google.com';
@@ -168,8 +174,29 @@ class ScrapeKeywordsJob implements ShouldQueue
                         'external_id' => mb_substr($externalId, 0, 190),
                     ]);
 
+                $isExistingArticle = $article->exists;
                 if ($article->trashed()) {
                     $article->restore();
+                }
+
+                if ($isExistingArticle) {
+                    // Post was previously fetched for this tenant: preserve existing record and link without re-processing
+                    $syncedArticleIds[] = $article->id;
+                    if (is_array($post) && !empty($post['keyword'])) {
+                        $kwRecord = \App\Models\Keyword::firstOrCreate(
+                            ['tenant_id' => $this->tenantId, 'name' => $post['keyword']],
+                            ['status' => 'active', 'category' => 'general']
+                        );
+                        if ($kwRecord) {
+                            $article->keywords()->syncWithoutDetaching([
+                                $kwRecord->id => [
+                                    'matched_terms' => json_encode([$post['keyword']]),
+                                    'relevance_score' => 0.90,
+                                ],
+                            ]);
+                        }
+                    }
+                    continue;
                 }
 
                 $postSentiment = is_array($post) ? ($post['sentiment'] ?? null) : null;
@@ -238,6 +265,25 @@ class ScrapeKeywordsJob implements ShouldQueue
                     \Illuminate\Support\Facades\Log::warning("Failed to auto-generate keyword campaign PDF report: " . $e->getMessage());
                 }
             }
+        }
+
+        TenantContext::forgetTenant();
+    }
+
+    public function failed(\Throwable $exception): void
+    {
+        Log::error("ScrapeKeywordsJob permanently failed for tenant {$this->tenantId}: " . $exception->getMessage(), [
+            'exception' => $exception,
+        ]);
+
+        if ($this->collectionId) {
+            Collection::withoutGlobalScopes()
+                ->where('id', $this->collectionId)
+                ->where('status', '!=', Collection::STATUS_COMPLETED)
+                ->update([
+                    'status' => Collection::STATUS_FAILED,
+                    'error_message' => 'حدث خطأ أثناء جمع البيانات: ' . $exception->getMessage(),
+                ]);
         }
 
         TenantContext::forgetTenant();

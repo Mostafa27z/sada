@@ -1466,15 +1466,17 @@ class AiScraperService
             foreach ($normalized['twitter_urls'] as $twUrl) {
                 $cleanTwUrl = preg_replace('/\?.*$/', '', trim($twUrl));
                 $rootTweetId = '';
+                if (preg_match('/status(?:es)?\/(\d+)/i', $cleanTwUrl, $m)) {
+                    $rootTweetId = $m[1];
+                }
 
                 if ($this->apifyService) {
                     $twMeta = $this->apifyService->fetchTwitterPostMetrics($cleanTwUrl);
                     if ($twMeta) {
                         $postMetadata = $twMeta;
                     }
-                } elseif (preg_match('/(?:twitter|x)\.com\/([^\/]+)\/status\/(\d+)/i', $cleanTwUrl, $m)) {
+                } elseif (!empty($rootTweetId) && preg_match('/(?:twitter|x)\.com\/([^\/]+)\/status/i', $cleanTwUrl, $m)) {
                     $uHandle = $m[1];
-                    $rootTweetId = $m[2];
                     try {
                         $fxRes = Http::withoutVerifying()
                             ->withHeaders(['User-Agent' => 'TelegramBot (like TwitterBot)'])
@@ -1518,16 +1520,26 @@ class AiScraperService
                     'outputPreset' => 'flat',
                 ], $token, 50);
 
-                // 2. Secondary fallback actor if xquik returned empty
-                if (empty($items)) {
+                // 2. Secondary fallback actor (fastcrawler requires conversationIds)
+                if (empty($items) && !empty($rootTweetId)) {
                     $items = $this->runApifyActor('fastcrawler~twitter-reply-scraper-0-1-1k-tweets-pay-per-result-2026', [
-                        'startUrls' => [['url' => $cleanTwUrl]],
+                        'conversationIds' => [$rootTweetId],
+                        'queryType' => 'Latest',
                         'maxItems' => $effectiveLimit,
                     ], $token, 45);
                 }
 
+                // 3. Tertiary fallback actor if still empty (qhybbvlFivx7AP0Oh post replies scraper)
+                if (empty($items)) {
+                    $items = $this->runApifyActor('qhybbvlFivx7AP0Oh', [
+                        'postUrls' => [$cleanTwUrl],
+                        'resultsLimit' => $effectiveLimit,
+                        'includeOriginalPost' => false,
+                    ], $token, 45);
+                }
+
                 foreach ($items as $idx => $item) {
-                    $text = trim($item['text'] ?? $item['full_text'] ?? $item['raw_text']['text'] ?? '');
+                    $text = trim($item['text'] ?? $item['full_text'] ?? $item['tweet_text'] ?? $item['raw_text']['text'] ?? '');
                     if (empty($text)) continue;
 
                     // Clean leading reply mentions like @AlAhly @user
@@ -1541,6 +1553,9 @@ class AiScraperService
                         ?? $item['author']['username']
                         ?? $item['authorUsername']
                         ?? $item['user']['name']
+                        ?? $item['user']['screen_name']
+                        ?? $item['user']['username']
+                        ?? $item['username']
                         ?? 'مستخدم منصة X';
 
                     $sentimentData = $this->classifyArabicSentiment($cleanText);
@@ -1726,11 +1741,34 @@ class AiScraperService
      */
     protected function runApifyActor(string $actorId, array $input, string $token, int $timeout = 60): array
     {
+        // Sanitize input arrays: eliminate duplicate and empty items in any scalar list
+        foreach ($input as $key => $val) {
+            if (is_array($val) && !empty($val) && array_is_list($val)) {
+                $isScalarList = true;
+                foreach ($val as $item) {
+                    if (!is_string($item) && !is_numeric($item)) {
+                        $isScalarList = false;
+                        break;
+                    }
+                }
+                if ($isScalarList) {
+                    $cleaned = array_map(fn($item) => is_string($item) ? trim($item) : $item, $val);
+                    $cleaned = array_filter($cleaned, fn($item) => $item !== '' && $item !== null);
+                    $input[$key] = array_values(array_unique($cleaned, SORT_REGULAR));
+                }
+            }
+        }
+
         $url = "https://api.apify.com/v2/acts/{$actorId}/run-sync-get-dataset-items?token={$token}&memory=512&timeout={$timeout}";
+
+        if (\App\Services\ApifyScraperService::isCircuitOpen()) {
+            return [];
+        }
 
         try {
             $response = Http::withHeaders(['Content-Type' => 'application/json'])
                 ->withoutVerifying()
+                ->connectTimeout(8)
                 ->timeout($timeout + 5)
                 ->post($url, $input);
 
@@ -1740,8 +1778,13 @@ class AiScraperService
             }
 
             Log::warning("Apify actor {$actorId} returned status " . $response->status() . " body: " . substr($response->body(), 0, 500));
-        } catch (\Exception $e) {
-            Log::error("Apify actor {$actorId} failed: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            $msg = $e->getMessage();
+            if (str_contains($msg, 'Could not resolve host') || str_contains($msg, 'SSL connection timeout') || str_contains($msg, 'Connection was reset') || str_contains($msg, 'Timeout') || str_contains($msg, 'cURL error 6') || str_contains($msg, 'cURL error 28')) {
+                Log::warning("Apify actor {$actorId} network timeout/unreachable: " . $msg);
+            } else {
+                Log::error("Apify actor {$actorId} failed: " . $msg);
+            }
         }
 
         return [];

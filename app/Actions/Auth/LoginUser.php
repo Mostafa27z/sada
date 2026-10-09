@@ -37,9 +37,9 @@ class LoginUser
             ]);
         }
 
-        if ($user->isSuspended()) {
+        if ($user->isSuspended() || ($user->currentTenant && $user->currentTenant->isSuspended())) {
             throw ValidationException::withMessages([
-                'email' => [__('messages.account_suspended')],
+                'email' => [__('messages.account_pending_approval')],
             ]);
         }
 

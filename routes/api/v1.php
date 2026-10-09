@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\V1\ComplaintController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\KeywordController;
 use App\Http\Controllers\Api\V1\PlanController;
+use App\Http\Controllers\Api\V1\PlanRequestController;
 use App\Http\Controllers\Api\V1\PublicComplaintController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\RoleController;
@@ -65,7 +66,7 @@ Route::prefix('auth')->group(function () {
 
 // SaaS Plans (Public / Read-only)
 Route::get('/plans', [PlanController::class, 'index']);
-Route::get('/plans/{slug}', [PlanController::class, 'show']);
+Route::get('/plans/{slug}', [PlanController::class, 'show'])->where('slug', '^(?!my-requests$).*');
 
 // Public Tenant Registration Request submission
 Route::post('/tenant-requests', [TenantRequestController::class, 'store']);
@@ -131,11 +132,18 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/tenants', [SuperAdminController::class, 'tenants']);
         Route::get('/metrics', [SuperAdminController::class, 'metrics']);
         Route::post('/tenants/{tenant}/plan', [SuperAdminController::class, 'assignPlan']);
+        Route::post('/tenants/{tenant}/approve', [SuperAdminController::class, 'approveTenant']);
+        Route::post('/tenants/{tenant}/reject', [SuperAdminController::class, 'rejectTenant']);
 
         // Tenant Join Requests Management
         Route::get('/tenant-requests', [TenantRequestController::class, 'index']);
         Route::post('/tenant-requests/{id}/approve', [TenantRequestController::class, 'approve']);
         Route::post('/tenant-requests/{id}/reject', [TenantRequestController::class, 'reject']);
+
+        // Client Plan Requests Management
+        Route::get('/plan-requests', [PlanRequestController::class, 'index']);
+        Route::post('/plan-requests/{id}/approve', [PlanRequestController::class, 'approve']);
+        Route::post('/plan-requests/{id}/reject', [PlanRequestController::class, 'reject']);
 
         // Overview Analytics & Leaderboards
         Route::get('/analytics/company-growth', [SuperAdminController::class, 'companyGrowth']);
@@ -151,6 +159,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // System Backups Management
         Route::get('/backups', [SuperAdminController::class, 'listBackups']);
         Route::post('/backups/trigger', [SuperAdminController::class, 'triggerBackup']);
+        Route::get('/backups/{id}/download', [SuperAdminController::class, 'downloadBackup']);
 
         // Infrastructure Health & System Alerts
         Route::get('/infrastructure', [SuperAdminController::class, 'infrastructureHealth']);
@@ -183,6 +192,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // Subscription & Usage Limits
         Route::get('/subscription', [SubscriptionController::class, 'show']);
         Route::get('/usage', [SubscriptionController::class, 'usage']);
+        Route::post('/plans/request', [PlanRequestController::class, 'store']);
+        Route::get('/plans/my-requests', [PlanRequestController::class, 'myRequests']);
 
         // Dashboard & Intelligence
         Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
@@ -253,13 +264,14 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::prefix('trends')->group(function () {
             Route::get('/', [TrendController::class, 'index']);
             Route::post('/analyze', [TrendController::class, 'analyze']);
+            Route::get('/master-post-status', [TrendController::class, 'masterPostStatus']);
             Route::post('/master-post', [TrendController::class, 'generateMasterPost']);
             Route::get('/{id}', [TrendController::class, 'show']);
             Route::delete('/{id}', [TrendController::class, 'destroy']);
         });
 
-        // Tenant Daily Industry News Radar Module
-        Route::prefix('industry-news')->group(function () {
+        // Tenant Daily Industry News Radar Module (Premium Feature)
+        Route::prefix('industry-news')->middleware('feature:news')->group(function () {
             Route::get('/today', [TenantIndustryNewsController::class, 'today']);
             Route::get('/', [TenantIndustryNewsController::class, 'index']);
             Route::get('/{id}', [TenantIndustryNewsController::class, 'show']);

@@ -26,12 +26,14 @@ class Tenant extends Model
         'slug',
         'logo',
         'status',
+        'trial_ends_at',
         'plan_id',
         'settings',
     ];
 
     protected $casts = [
         'settings' => 'array',
+        'trial_ends_at' => 'datetime',
     ];
 
     protected static function boot(): void
@@ -109,9 +111,30 @@ class Tenant extends Model
         return $this->status === self::STATUS_TRIAL;
     }
 
+    public function planRequests(): HasMany
+    {
+        return $this->hasMany(PlanRequest::class);
+    }
+
     public function isCancelled(): bool
     {
         return $this->status === self::STATUS_CANCELLED;
+    }
+
+    public function isTrialExpired(): bool
+    {
+        return $this->status === self::STATUS_TRIAL
+            && $this->trial_ends_at !== null
+            && $this->trial_ends_at->isPast();
+    }
+
+    public function trialDaysRemaining(): int
+    {
+        if ($this->status !== self::STATUS_TRIAL || !$this->trial_ends_at) {
+            return 0;
+        }
+
+        return max(0, (int) now()->diffInDays($this->trial_ends_at, false));
     }
 
     /**
