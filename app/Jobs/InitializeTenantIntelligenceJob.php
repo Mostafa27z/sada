@@ -99,13 +99,11 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
                 'trends_count' => $pipelineResult['trends_count'] ?? 3,
                 'trends_analysis' => $pipelineResult['trends_analysis'] ?? [],
             ]);
-
-            // 3. Create TWO Separate Campaigns (Collections): 1) Brand Specific, 2) General Sector
+            // Build keyword lists for seeding (autocomplete & suggestions)
             $cleanName = trim(preg_replace('/^(مدرسة|شركة|مؤسسة|سلسلة|مطعم|مستشفى|مركز)\s+/u', '', $this->companyName));
             $shortName = $cleanName ?: $this->companyName;
 
-            // Brand Specific Keywords
-            $brandKeywords = array_filter([
+            $brandKeywords = array_values(array_unique(array_filter([
                 $this->companyName,
                 $shortName,
                 $this->city ? "{$this->companyName} {$this->city}" : null,
@@ -115,48 +113,12 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
                 $this->city ? "#" . str_replace(' ', '_', "{$shortName}_{$this->city}") : null,
                 "آراء حول {$this->companyName}",
                 "تجربة {$shortName}",
-            ]);
-            $brandKeywords = array_values(array_unique($brandKeywords));
+            ])));
 
-            // Sector General Keywords
             $sectorKeywords = $this->generateSectorKeywords($this->industry, $this->country);
 
-            // Campaign 1: Brand Collection (Priority #1)
-            $brandCampaignName = "رصد خاص: {$this->companyName}";
-            if ($this->city) {
-                $brandCampaignName .= " ({$this->city})";
-            }
-            $brandCollection = Collection::create([
-                'tenant_id' => $tenant->id,
-                'created_by' => $this->userId,
-                'name' => $brandCampaignName,
-                'description' => "رصد وتتبع علامة {$this->companyName} والوسوم والآراء المباشرة الموجهة لها في {$this->country}",
-                'link' => '#',
-                'platform' => 'all',
-                'country' => $countryCode,
-                'keywords' => implode(', ', $brandKeywords),
-                'comments_limit' => 50,
-                'color' => '#10b981',
-                'status' => Collection::STATUS_ACTIVE,
-            ]);
-
-            // Campaign 2: Sector Collection (Priority #2)
-            $sectorCampaignName = "تريندات قطاع {$this->industry} في {$this->country}";
-            $sectorCollection = Collection::create([
-                'tenant_id' => $tenant->id,
-                'created_by' => $this->userId,
-                'name' => $sectorCampaignName,
-                'description' => "رصد ونبض القرارات والأخبار الشائعة والتريندات العامة لقطاع {$this->industry} في {$this->country}",
-                'link' => '#',
-                'platform' => 'all',
-                'country' => $countryCode,
-                'keywords' => implode(', ', $sectorKeywords),
-                'comments_limit' => 50,
-                'color' => '#6366f1',
-                'status' => Collection::STATUS_ACTIVE,
-            ]);
-
-            // 4. Create Seed Keyword records: High priority for Brand, Medium priority for Sector
+            // 3. Create Seed Keyword records: High priority for Brand, Medium priority for Sector
+            // (Used for autocomplete & suggestions when user creates their own campaigns)
             foreach (array_slice($brandKeywords, 0, 6) as $kw) {
                 Keyword::firstOrCreate(
                     ['tenant_id' => $tenant->id, 'name' => $kw],
@@ -170,8 +132,9 @@ class InitializeTenantIntelligenceJob implements ShouldQueue
                 );
             }
 
-            // 5. Scrape REAL posts and populate both collections
-            $this->scrapeAndSaveRealArticles($tenant, $brandCollection, $sectorCollection, $countryCode, $scraper);
+            // NOTE: Auto-campaigns (brand + sector) are NO LONGER created automatically.
+            // Users create their own campaigns with their preferred keywords and platform limits.
+            // The seeded keywords above are available for autocomplete/suggestions.
         });
         
         if ($tenant->plan && $tenant->plan->has_news) {
