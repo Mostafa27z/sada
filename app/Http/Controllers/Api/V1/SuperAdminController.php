@@ -232,8 +232,8 @@ class SuperAdminController extends Controller
                     ->where('status', 'active')
                     ->count();
 
-                $mrr = Subscription::where('status', 'active')
-                    ->where('created_at', '<=', $endOfMonth)
+                $mrr = Subscription::where('subscriptions.status', 'active')
+                    ->where('subscriptions.created_at', '<=', $endOfMonth)
                     ->join('plans', 'subscriptions.plan_id', '=', 'plans.id')
                     ->sum('plans.price');
 
