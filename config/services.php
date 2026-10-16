@@ -36,7 +36,11 @@ return [
     ],
 
     'apify' => [
+        'enabled' => env('APIFY_ENABLED', true),
         'token' => env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2'),
+        'connect_timeout' => (int) env('APIFY_CONNECT_TIMEOUT', 10),
+        'timeout' => (int) env('APIFY_TIMEOUT', 180),
+        'proxy' => env('APIFY_PROXY', env('HTTPS_PROXY')),
     ],
 
     'gemini' => [

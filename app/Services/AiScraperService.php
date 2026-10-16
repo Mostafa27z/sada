@@ -25,7 +25,16 @@ class AiScraperService
     /**
      * Scrape posts and generate sentiment analytics by keywords across platforms natively.
      */
-    public function scrapeByKeywords(array $keywords, array $platforms = ['instagram', 'facebook', 'x', 'tiktok'], ?string $country = null, ?string $dateFrom = null, ?string $dateTo = null, int $limit = 50, ?array $rubric = null): array
+    public function scrapeByKeywords(
+        array $keywords,
+        array $platforms = ['instagram', 'facebook', 'x', 'tiktok'],
+        ?string $country = null,
+        ?string $dateFrom = null,
+        ?string $dateTo = null,
+        int $limit = 50,
+        ?array $rubric = null,
+        ?array $platformLimits = null
+    ): array
     {
         if (empty($keywords)) {
             return [
@@ -36,104 +45,219 @@ class AiScraperService
 
         $countryCode = $country ?: 'SA';
         $platformCount = max(1, count($platforms));
-        // Allocate generous per-platform limit to reach the user target
-        $perPlatformLimit = max(15, intval(ceil($limit / $platformCount)));
+        // Allocate per-platform limit to reach the user target
+        $defaultPerPlatformLimit = max(10, intval(ceil($limit / $platformCount)));
 
-        // 1. Try ApifyScraperService + GeminiAnalyticsService if available
-        if ($this->apifyService && $this->geminiService) {
-            $instaPosts = [];
-            $fbPosts = [];
-            $xPosts = [];
-            $tiktokPosts = [];
+        $instaLimit = isset($platformLimits['instagram']) ? (int)$platformLimits['instagram'] : $defaultPerPlatformLimit;
+        $fbLimit = isset($platformLimits['facebook']) ? (int)$platformLimits['facebook'] : $defaultPerPlatformLimit;
+        $xLimit = isset($platformLimits['x']) ? (int)$platformLimits['x'] : (isset($platformLimits['twitter']) ? (int)$platformLimits['twitter'] : $defaultPerPlatformLimit);
+        $tiktokLimit = isset($platformLimits['tiktok']) ? (int)$platformLimits['tiktok'] : $defaultPerPlatformLimit;
+        $webLimit = isset($platformLimits['web']) ? (int)$platformLimits['web'] : $defaultPerPlatformLimit;
 
+        $instaPosts = [];
+        $fbPosts = [];
+        $xPosts = [];
+        $tiktokPosts = [];
+        $webPosts = [];
+
+        // ============================================================
+        // STRATEGY: Google News RSS FIRST (instant, zero-risk), then
+        // Apify supplements ONLY if quota not met. This eliminates
+        // 40s+ of wasted timeout on networks where api.apify.com is
+        // unreachable (CGNAT / AWS Global Accelerator IP blocking).
+        // ============================================================
+
+        $apifyAvailable = $this->apifyService && $this->apifyService->isEnabled();
+
+        // 1. Fetch posts for each platform: Google News first, Apify supplements
+        // A. Instagram
+        if (in_array('instagram', $platforms) && $instaLimit > 0) {
             try {
-                if (in_array('instagram', $platforms)) {
-                    $instaPosts = $this->apifyService->fetchInstagramByKeywords($keywords, $perPlatformLimit, $country);
-                }
-                if (in_array('facebook', $platforms)) {
-                    $fbPosts = $this->apifyService->fetchFacebookByKeywords($keywords, $perPlatformLimit, $country);
-                }
-                if (in_array('x', $platforms) || in_array('twitter', $platforms)) {
-                    $xPosts = $this->apifyService->fetchXByKeywords($keywords, $perPlatformLimit, $country, $dateFrom, $dateTo);
-                }
-                if (in_array('tiktok', $platforms)) {
-                    $tiktokPosts = $this->apifyService->fetchTiktokByKeywords($keywords, $perPlatformLimit, $country);
-                }
-
-                $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
-
-                // 1. Rule-based strict relevance filtering before AI
-                $allPosts = array_values(array_filter($allPosts, function($p) use ($keywords) {
-                    $txt = ($p['text'] ?? '') . ' ' . ($p['title'] ?? '') . ' ' . ($p['author'] ?? '');
-                    return \App\Support\KeywordRelevanceFilter::isContentRelevant($txt, $keywords);
-                }));
-
-                if (!empty($allPosts)) {
-                    // Classify individual sentiments and verify subject relevance for each post via Gemini
-                    $sentimentMap = [];
-                    try {
-                        $sentimentMap = $this->geminiService->classifyPostsSentiment($allPosts, $rubric, $keywords);
-                    } catch (\Throwable $geminiErr) {
-                        Log::warning("Gemini classifyPostsSentiment error: " . $geminiErr->getMessage());
-                    }
-
-                    // 2. Discard posts flagged as irrelevant by AI
-                    $allPosts = array_values(array_filter($allPosts, function($post) use ($sentimentMap) {
-                        $key = $post['post_id'] ?? $post['external_id'] ?? null;
-                        if ($key && isset($sentimentMap[(string)$key])) {
-                            return $sentimentMap[(string)$key]['is_relevant'] !== false;
-                        }
-                        return true;
-                    }));
-
-                    $enrichSentiment = function(&$postList) use ($sentimentMap, $rubric, $keywords) {
-                        $filtered = [];
-                        foreach ($postList as $post) {
-                            $key = $post['post_id'] ?? $post['external_id'] ?? null;
-                            if ($key && isset($sentimentMap[(string)$key])) {
-                                if ($sentimentMap[(string)$key]['is_relevant'] === false) {
-                                    continue; // Drop irrelevant post
-                                }
-                                $post['sentiment'] = $sentimentMap[(string)$key]['sentiment'];
-                                $post['sentiment_score'] = $sentimentMap[(string)$key]['sentiment_score'];
-                                $post['sentiment_reason'] = $sentimentMap[(string)$key]['reason'] ?? null;
-                            } else {
-                                $fbData = $this->classifyArabicSentiment(($post['text'] ?? '') . ' ' . ($post['title'] ?? ''), $rubric, $keywords);
-                                $post['sentiment'] = $fbData['sentiment'];
-                                $post['sentiment_score'] = $fbData['score'] ?? 0.8;
-                                $post['sentiment_reason'] = $fbData['reason'] ?? null;
-                            }
-                            $filtered[] = $post;
-                        }
-                        $postList = $filtered;
-                    };
-
-                    $enrichSentiment($instaPosts);
-                    $enrichSentiment($fbPosts);
-                    $enrichSentiment($xPosts);
-                    $enrichSentiment($tiktokPosts);
-
-                    // Re-merge only verified relevant posts
-                    $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts);
-
-                    $analyticsJson = $this->geminiService->analyzeSentiment($instaPosts, $fbPosts, $xPosts, $tiktokPosts, $rubric);
-
-                    return [
-                        'status' => 'success',
-                        'query_keywords' => $keywords,
-                        'total_posts_count' => count($allPosts),
-                        'posts_by_platform' => [
-                            'instagram_posts' => $instaPosts,
-                            'facebook_posts' => $fbPosts,
-                            'x_posts' => $xPosts,
-                            'tiktok_posts' => $tiktokPosts,
-                        ],
-                        'analytics' => $analyticsJson,
-                    ];
-                }
-            } catch (\Exception $e) {
-                Log::error('Native AiScraperService exception on scrapeByKeywords: ' . $e->getMessage());
+                $gInsta = $this->scrapeKeywordsViaGoogleNews($keywords, ['instagram'], $countryCode, $dateFrom, $dateTo, $instaLimit);
+                $instaPosts = $gInsta['posts_by_platform']['instagram_posts'] ?? [];
+            } catch (\Throwable $e) {
+                Log::warning("GoogleNews Instagram scraper error: " . $e->getMessage());
             }
+            if (count($instaPosts) < $instaLimit && $apifyAvailable) {
+                try {
+                    $apifyInsta = $this->apifyService->fetchInstagramByKeywords($keywords, $instaLimit - count($instaPosts), $country);
+                    $instaPosts = array_merge($instaPosts, $apifyInsta);
+                } catch (\Throwable $e) {
+                    Log::warning("fetchInstagramByKeywords error: " . $e->getMessage());
+                }
+            }
+            $instaPosts = array_slice($instaPosts, 0, $instaLimit);
+        }
+
+        // B. Facebook
+        if (in_array('facebook', $platforms) && $fbLimit > 0) {
+            try {
+                $gFb = $this->scrapeKeywordsViaGoogleNews($keywords, ['facebook'], $countryCode, $dateFrom, $dateTo, $fbLimit);
+                $fbPosts = $gFb['posts_by_platform']['facebook_posts'] ?? [];
+            } catch (\Throwable $e) {
+                Log::warning("GoogleNews Facebook scraper error: " . $e->getMessage());
+            }
+            if (count($fbPosts) < $fbLimit && $apifyAvailable) {
+                try {
+                    $apifyFb = $this->apifyService->fetchFacebookByKeywords($keywords, $fbLimit - count($fbPosts), $country);
+                    $fbPosts = array_merge($fbPosts, $apifyFb);
+                } catch (\Throwable $e) {
+                    Log::warning("fetchFacebookByKeywords error: " . $e->getMessage());
+                }
+            }
+            $fbPosts = array_slice($fbPosts, 0, $fbLimit);
+        }
+
+        // C. Twitter / X
+        if ((in_array('x', $platforms) || in_array('twitter', $platforms)) && $xLimit > 0) {
+            try {
+                $gX = $this->scrapeKeywordsViaGoogleNews($keywords, ['x'], $countryCode, $dateFrom, $dateTo, $xLimit);
+                $xPosts = $gX['posts_by_platform']['x_posts'] ?? [];
+            } catch (\Throwable $e) {
+                Log::warning("GoogleNews X scraper error: " . $e->getMessage());
+            }
+            if (count($xPosts) < $xLimit && $apifyAvailable) {
+                try {
+                    $apifyX = $this->apifyService->fetchXByKeywords($keywords, $xLimit - count($xPosts), $country, $dateFrom, $dateTo);
+                    $xPosts = array_merge($xPosts, $apifyX);
+                } catch (\Throwable $e) {
+                    Log::warning("fetchXByKeywords error: " . $e->getMessage());
+                }
+            }
+            $xPosts = array_slice($xPosts, 0, $xLimit);
+        }
+
+        // D. TikTok
+        if (in_array('tiktok', $platforms) && $tiktokLimit > 0) {
+            try {
+                $gTt = $this->scrapeKeywordsViaGoogleNews($keywords, ['tiktok'], $countryCode, $dateFrom, $dateTo, $tiktokLimit);
+                $tiktokPosts = $gTt['posts_by_platform']['tiktok_posts'] ?? [];
+            } catch (\Throwable $e) {
+                Log::warning("GoogleNews TikTok scraper error: " . $e->getMessage());
+            }
+            if (count($tiktokPosts) < $tiktokLimit && $apifyAvailable) {
+                try {
+                    $apifyTt = $this->apifyService->fetchTiktokByKeywords($keywords, $tiktokLimit - count($tiktokPosts), $country);
+                    $tiktokPosts = array_merge($tiktokPosts, $apifyTt);
+                } catch (\Throwable $e) {
+                    Log::warning("fetchTiktokByKeywords error: " . $e->getMessage());
+                }
+            }
+            $tiktokPosts = array_slice($tiktokPosts, 0, $tiktokLimit);
+        }
+
+        // E. Web / News
+        if (in_array('web', $platforms) && $webLimit > 0) {
+            try {
+                $gWeb = $this->scrapeKeywordsViaGoogleNews($keywords, ['web'], $countryCode, $dateFrom, $dateTo, $webLimit);
+                $webPosts = $gWeb['posts_by_platform']['web_posts'] ?? $gWeb['posts_by_platform']['other_posts'] ?? [];
+                $webPosts = array_slice($webPosts, 0, $webLimit);
+            } catch (\Throwable $e) {
+                Log::warning("GoogleNews Web scraper error: " . $e->getMessage());
+            }
+        }
+
+        // Deduplicate within each platform
+        $dedup = function(array $items) {
+            $seen = [];
+            $out = [];
+            foreach ($items as $item) {
+                $key = $item['url'] ?? $item['post_id'] ?? $item['external_id'] ?? null;
+                if ($key && isset($seen[$key])) {
+                    continue;
+                }
+                if ($key) $seen[$key] = true;
+                $out[] = $item;
+            }
+            return $out;
+        };
+
+        $instaPosts = $dedup($instaPosts);
+        $fbPosts = $dedup($fbPosts);
+        $xPosts = $dedup($xPosts);
+        $tiktokPosts = $dedup($tiktokPosts);
+        $webPosts = $dedup($webPosts);
+
+        // Strict Relevance Filtering
+        $filterRelevant = function(array $posts) use ($keywords) {
+            return array_values(array_filter($posts, function($p) use ($keywords) {
+                $txt = ($p['text'] ?? '') . ' ' . ($p['title'] ?? '') . ' ' . ($p['author'] ?? '');
+                return \App\Support\KeywordRelevanceFilter::isContentRelevant($txt, $keywords);
+            }));
+        };
+
+        $instaPosts = $filterRelevant($instaPosts);
+        $fbPosts = $filterRelevant($fbPosts);
+        $xPosts = $filterRelevant($xPosts);
+        $tiktokPosts = $filterRelevant($tiktokPosts);
+        $webPosts = $filterRelevant($webPosts);
+
+        $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts, $webPosts);
+
+        if (!empty($allPosts)) {
+            // Sentiment Enrichment via Gemini
+            $sentimentMap = [];
+            if ($this->geminiService) {
+                try {
+                    $sentimentMap = $this->geminiService->classifyPostsSentiment($allPosts, $rubric, $keywords);
+                } catch (\Throwable $geminiErr) {
+                    Log::warning("Gemini classifyPostsSentiment error: " . $geminiErr->getMessage());
+                }
+            }
+
+            $enrichSentiment = function(&$postList) use ($sentimentMap, $rubric, $keywords) {
+                $filtered = [];
+                foreach ($postList as $post) {
+                    $key = $post['post_id'] ?? $post['external_id'] ?? null;
+                    if ($key && isset($sentimentMap[(string)$key])) {
+                        if ($sentimentMap[(string)$key]['is_relevant'] === false) {
+                            continue;
+                        }
+                        $post['sentiment'] = $sentimentMap[(string)$key]['sentiment'];
+                        $post['sentiment_score'] = $sentimentMap[(string)$key]['sentiment_score'];
+                        $post['sentiment_reason'] = $sentimentMap[(string)$key]['reason'] ?? null;
+                    } else {
+                        $fbData = $this->classifyArabicSentiment(($post['text'] ?? '') . ' ' . ($post['title'] ?? ''), $rubric, $keywords);
+                        $post['sentiment'] = $fbData['sentiment'];
+                        $post['sentiment_score'] = $fbData['score'] ?? 0.8;
+                        $post['sentiment_reason'] = $fbData['reason'] ?? null;
+                    }
+                    $filtered[] = $post;
+                }
+                $postList = $filtered;
+            };
+
+            $enrichSentiment($instaPosts);
+            $enrichSentiment($fbPosts);
+            $enrichSentiment($xPosts);
+            $enrichSentiment($tiktokPosts);
+            $enrichSentiment($webPosts);
+
+            $allPosts = array_merge($instaPosts, $fbPosts, $xPosts, $tiktokPosts, $webPosts);
+
+            $analyticsJson = [];
+            if ($this->geminiService) {
+                try {
+                    $analyticsJson = $this->geminiService->analyzeSentiment($instaPosts, $fbPosts, $xPosts, $tiktokPosts, $rubric, $webPosts);
+                } catch (\Throwable $e) {
+                    Log::warning("Gemini analyzeSentiment error: " . $e->getMessage());
+                }
+            }
+
+            return [
+                'status' => 'success',
+                'query_keywords' => $keywords,
+                'total_posts_count' => count($allPosts),
+                'posts_by_platform' => [
+                    'instagram_posts' => $instaPosts,
+                    'facebook_posts' => $fbPosts,
+                    'x_posts' => $xPosts,
+                    'tiktok_posts' => $tiktokPosts,
+                    'web_posts' => $webPosts,
+                    'other_posts' => $webPosts,
+                ],
+                'analytics' => $analyticsJson,
+            ];
         }
 
         // 2. Try local AI microservice ONLY if explicitly configured
@@ -327,11 +451,11 @@ class AiScraperService
         }
 
         if ($personShort) {
-            if ($contextTerm) {
-                return "\"{$personShort}\" {$contextTerm}";
-            }
             if ($personFull) {
                 return "(\"{$personShort}\" OR \"{$personFull}\")";
+            }
+            if ($contextTerm && \App\Support\KeywordRelevanceFilter::isCommonRegion($contextTerm)) {
+                return "\"{$personShort}\" {$contextTerm}";
             }
             return "\"{$personShort}\"";
         }
@@ -730,7 +854,7 @@ class AiScraperService
     /**
      * High-speed real news and social collection using Google News RSS across requested platforms.
      */
-    protected function scrapeKeywordsViaGoogleNews(array $keywords, array $platforms, string $countryCode, ?string $dateFrom = null, ?string $dateTo = null): array
+    protected function scrapeKeywordsViaGoogleNews(array $keywords, array $platforms, string $countryCode, ?string $dateFrom = null, ?string $dateTo = null, int $limit = 50): array
     {
         $countryCodeUpper = strtoupper($countryCode ?: 'SA');
 
@@ -765,6 +889,7 @@ class AiScraperService
             'facebook_posts' => [],
             'instagram_posts' => [],
             'tiktok_posts' => [],
+            'web_posts' => [],
             'other_posts' => [],
         ];
         $sentimentCounts = ['positive' => 0, 'neutral' => 0, 'negative' => 0];
@@ -783,9 +908,20 @@ class AiScraperService
             $whenClause = "when:" . min(365, (int)$daysDiff) . "d";
             $maxAgeSeconds = ($now - $fromTs + 86400);
         } else {
-            $whenClause = "when:30d";
-            $maxAgeSeconds = 86400 * 30;
+            $whenClause = "";
+            $maxAgeSeconds = 86400 * 365 * 2; // Allow up to 2 years if no date_from specified
         }
+
+        $streamCtx = stream_context_create([
+            'http' => [
+                'timeout' => 8,
+                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            ],
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+            ],
+        ]);
 
         foreach ($keywords as $kw) {
             $optimalQuery = $this->buildOptimalSearchQuery($kw);
@@ -814,7 +950,7 @@ class AiScraperService
                     'facebook' => 'facebook_posts',
                     'instagram' => 'instagram_posts',
                     'tiktok' => 'tiktok_posts',
-                    default => 'other_posts',
+                    default => 'web_posts',
                 };
 
                 $sitePrefix = match ($platformKey) {
@@ -825,13 +961,36 @@ class AiScraperService
                     default => '',
                 };
 
-                // Query with primary term quoted and dynamic date range
-                $searchQuery = trim("{$sitePrefix}{$primaryQuoted} {$whenClause}");
-                $rssUrl = "https://news.google.com/rss/search?q=" . urlencode($searchQuery) . "&hl=ar&gl={$glCode}&ceid={$ceid}";
-                $content = @file_get_contents($rssUrl);
+                $cleanKw = trim($kw, " \t\n\r\0\x0B\"'");
 
-                $xml = $content ? @simplexml_load_string($content) : null;
-                $items = ($xml && isset($xml->channel->item)) ? $xml->channel->item : [];
+                // Build query variations to maximize coverage for each platform
+                $queryVariants = [];
+                if (!empty($primaryQuoted)) {
+                    $queryVariants[] = trim("{$sitePrefix}{$primaryQuoted}" . ($whenClause ? " {$whenClause}" : ""));
+                }
+                $queryVariants[] = trim("{$sitePrefix}\"{$cleanKw}\"" . ($whenClause ? " {$whenClause}" : ""));
+                $queryVariants[] = trim("{$sitePrefix}{$cleanKw}" . ($whenClause ? " {$whenClause}" : ""));
+
+                $seenItemUrls = [];
+                $items = [];
+
+                foreach ($queryVariants as $qVariant) {
+                    if (count($items) >= $limit) {
+                        break;
+                    }
+                    $rssUrl = "https://news.google.com/rss/search?q=" . urlencode($qVariant) . "&hl=ar&gl={$glCode}&ceid={$ceid}";
+                    $content = @file_get_contents($rssUrl, false, $streamCtx);
+                    $xml = $content ? @simplexml_load_string($content) : null;
+                    if ($xml && isset($xml->channel->item)) {
+                        foreach ($xml->channel->item as $it) {
+                            $link = (string)($it->link ?? '');
+                            if ($link && !isset($seenItemUrls[$link])) {
+                                $seenItemUrls[$link] = true;
+                                $items[] = $it;
+                            }
+                        }
+                    }
+                }
 
                 $candidateItems = [];
 
@@ -847,7 +1006,7 @@ class AiScraperService
                     $parsedPub = !empty($pubDate) ? $this->parseSocialTimestamp($pubDate) : null;
                     $timestamp = ($parsedPub && $parsedPub >= 946684800) ? $parsedPub : $now;
 
-                    // 1. Dynamic Date Check: Respect requested date range or 30-day window
+                    // 1. Dynamic Date Check: Respect requested date range or 2-year window
                     if ($fromTs && $timestamp < $fromTs) {
                         continue;
                     }
@@ -878,7 +1037,16 @@ class AiScraperService
                     $fullContent = $cleanTitle . ' ' . $cleanText;
 
                     // 2. Strict Keyword Relevance Check: MUST contain primary brand term
-                    if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($fullContent, $keywords)) {
+                    $kwClean = trim($kw, " \"'");
+                    $isRel = \App\Support\KeywordRelevanceFilter::isContentRelevant($fullContent, $keywords);
+                    if (!$isRel && !empty($kwClean)) {
+                        $normFull = \App\Support\KeywordRelevanceFilter::normalize($fullContent);
+                        $normKw = \App\Support\KeywordRelevanceFilter::normalize($kwClean);
+                        if (mb_stripos($normFull, $normKw) !== false) {
+                            $isRel = true;
+                        }
+                    }
+                    if (!$isRel) {
                         continue; // Strictly reject unrelated news/posts!
                     }
 
@@ -922,7 +1090,7 @@ class AiScraperService
 
                 $itemCount = 0;
                 foreach ($candidateItems as $entry) {
-                    if ($itemCount++ >= 15) break;
+                    if ($itemCount++ >= $limit) break;
                     $timestamp = $entry['timestamp'];
                     $cleanTitle = $entry['cleanTitle'];
                     $cleanText = $entry['cleanText'];
@@ -967,7 +1135,7 @@ class AiScraperService
                         }
                     }
 
-                    $postsByPlatform[$targetBucket][] = [
+                    $postItem = [
                         'keyword' => $kw,
                         'post_id' => "{$platformKey}_" . md5($link),
                         'external_id' => "{$platformKey}_" . md5($link),
@@ -982,6 +1150,10 @@ class AiScraperService
                         'engagement' => $engagement,
                         'created_at' => $createdAt,
                     ];
+                    $postsByPlatform[$targetBucket][] = $postItem;
+                    if ($targetBucket === 'web_posts') {
+                        $postsByPlatform['other_posts'][] = $postItem;
+                    }
                 }
             }
         }

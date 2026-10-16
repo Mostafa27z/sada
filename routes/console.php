@@ -9,7 +9,7 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Schedule::command('sada:scrape-keywords')->dailyAt('00:00');
-Schedule::command('sada:sync-all')->everyFourHours();
+Schedule::command('sada:sync-all')->dailyAt('00:00');
 Schedule::command('sada:fetch-industry-news')->dailyAt('20:00')->timezone('Asia/Riyadh');
+
 

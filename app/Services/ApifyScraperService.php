@@ -16,16 +16,81 @@ class ApifyScraperService
         $this->token = config('services.apify.token') ?: env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2') ?: '';
     }
 
-    protected static ?int $circuitBrokenUntil = null;
+    protected static array $brokenActors = [];
+    protected static ?int $globalCircuitOpenUntil = null;
+    protected static ?bool $connectivityVerified = null;
 
-    public static function isCircuitOpen(): bool
+    // Circuit breaker duration: 15 minutes (prevents wasting 40s per campaign on guaranteed failures)
+    protected const CIRCUIT_BREAK_SECONDS = 900;
+
+    public static function isCircuitOpen(?string $actorId = null): bool
     {
-        return self::$circuitBrokenUntil !== null && time() < self::$circuitBrokenUntil;
+        // Global circuit breaker: if api.apify.com is unreachable, ALL actors are unreachable
+        if (self::$globalCircuitOpenUntil !== null && time() < self::$globalCircuitOpenUntil) {
+            return true;
+        }
+        // Per-actor circuit breaker
+        if ($actorId !== null) {
+            return isset(self::$brokenActors[$actorId]) && time() < self::$brokenActors[$actorId];
+        }
+        return false;
     }
 
-    public static function resetCircuit(): void
+    public static function resetCircuit(?string $actorId = null): void
     {
-        self::$circuitBrokenUntil = null;
+        if ($actorId !== null) {
+            unset(self::$brokenActors[$actorId]);
+        } else {
+            self::$brokenActors = [];
+        }
+        // On any successful request, clear the global circuit too
+        self::$globalCircuitOpenUntil = null;
+        self::$connectivityVerified = true;
+    }
+
+    /**
+     * Trip the GLOBAL circuit breaker — all actors become unavailable.
+     * This prevents wasting 5-10s × 4 actors = 40s on networks where api.apify.com is unreachable.
+     */
+    protected static function tripGlobalCircuit(string $reason): void
+    {
+        self::$globalCircuitOpenUntil = time() + self::CIRCUIT_BREAK_SECONDS;
+        self::$connectivityVerified = false;
+        Log::warning("Apify GLOBAL circuit breaker tripped for " . self::CIRCUIT_BREAK_SECONDS . "s. Reason: {$reason}. All actors will use Google News fallback.");
+    }
+
+    /**
+     * Fast connectivity pre-check: test if api.apify.com is reachable via a 3-second TCP socket test.
+     * This runs ONCE per process lifecycle and prevents wasting time on unreachable networks.
+     */
+    public function checkConnectivity(): bool
+    {
+        if (self::$connectivityVerified !== null) {
+            return self::$connectivityVerified;
+        }
+
+        // If global circuit is open, don't even bother
+        if (self::$globalCircuitOpenUntil !== null && time() < self::$globalCircuitOpenUntil) {
+            self::$connectivityVerified = false;
+            return false;
+        }
+
+        $socket = @fsockopen('api.apify.com', 443, $errno, $errstr, 3);
+        if ($socket) {
+            fclose($socket);
+            self::$connectivityVerified = true;
+            Log::info('Apify connectivity check: PASSED (api.apify.com:443 reachable)');
+            return true;
+        }
+
+        self::$connectivityVerified = false;
+        self::tripGlobalCircuit("Connectivity pre-check failed: {$errstr} (errno: {$errno})");
+        return false;
+    }
+
+    public function isEnabled(): bool
+    {
+        return (bool) config('services.apify.enabled', true) && !empty($this->token);
     }
 
     /**
@@ -44,24 +109,49 @@ class ApifyScraperService
                 CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
             ];
 
-        return Http::withOptions([
+        $connectTimeout = (int) config('services.apify.connect_timeout', 10);
+        $proxy = config('services.apify.proxy');
+
+        $options = [
             'curl' => $curlOptions,
             'verify' => false,
-            'connect_timeout' => 15,
-        ]);
+            'connect_timeout' => max(2, $connectTimeout),
+        ];
+
+        if (!empty($proxy)) {
+            $options['proxy'] = $proxy;
+        }
+
+        return Http::withOptions($options);
     }
 
     /**
      * Run an Apify actor synchronously, waiting for completion, and return dataset items.
      */
-    protected function runActorAndFetchItems(string $actorId, array $input, int $timeoutSeconds = 180): array
+    protected function runActorAndFetchItems(string $actorId, array $input, ?int $timeoutSeconds = null): array
     {
+        if (!$this->isEnabled()) {
+            return [];
+        }
+
+        // Global circuit breaker check (prevents 40s wasted on unreachable networks)
         if (self::isCircuitOpen()) {
             return [];
         }
 
+        // Per-actor circuit breaker check
+        if (self::isCircuitOpen($actorId)) {
+            return [];
+        }
+
+        // Fast connectivity pre-check (runs only once per process)
+        if (!$this->checkConnectivity()) {
+            return [];
+        }
+
+        $timeoutSeconds = $timeoutSeconds ?: (int) config('services.apify.timeout', 180);
+
         if (empty($this->token)) {
-            Log::error("Apify API token is missing in .env");
             return [];
         }
 
@@ -130,9 +220,22 @@ class ApifyScraperService
             return [];
         } catch (\Throwable $e) {
             $msg = $e->getMessage();
-            if (str_contains($msg, 'Could not resolve host') || str_contains($msg, 'SSL connection timeout') || str_contains($msg, 'Connection was reset') || str_contains($msg, 'Timeout was reached') || str_contains($msg, 'cURL error 6') || str_contains($msg, 'cURL error 28') || str_contains($msg, 'cURL error 35')) {
-                self::$circuitBrokenUntil = time() + 60; // Trip circuit breaker for 60s
-                Log::warning("Apify Circuit Breaker tripped: Network/DNS connectivity issue ({$msg}). Skipping remote calls for 60s.");
+            $isNetworkError = str_contains($msg, 'Could not resolve host')
+                || str_contains($msg, 'SSL connection timeout')
+                || str_contains($msg, 'Connection was reset')
+                || str_contains($msg, 'Timeout was reached')
+                || str_contains($msg, 'cURL error 6')
+                || str_contains($msg, 'cURL error 28')
+                || str_contains($msg, 'cURL error 35')
+                || str_contains($msg, 'cURL error 7');
+
+            if ($isNetworkError) {
+                // Trip per-actor circuit breaker
+                self::$brokenActors[$actorId] = time() + self::CIRCUIT_BREAK_SECONDS;
+                // Trip GLOBAL circuit breaker — if we can't reach api.apify.com for this actor,
+                // we can't reach it for ANY actor. Skip all remaining actors instantly.
+                self::tripGlobalCircuit("Actor {$actorId}: {$msg}");
+                Log::warning("Apify Actor {$actorId} network failure ({$msg}). ALL actors disabled for " . self::CIRCUIT_BREAK_SECONDS . "s — using Google News fallback.");
             } else {
                 Log::error("Apify Actor {$actorId} exception: " . $msg);
             }
@@ -580,7 +683,7 @@ class ApifyScraperService
         $perKwLimit = max(5, intval(ceil($maxItems / count($targetedQueries))));
 
         foreach (array_slice($targetedQueries, 0, 3) as $kw) {
-            if (self::isCircuitOpen()) {
+            if (self::isCircuitOpen("TMBawM4LZpKN15DZX")) {
                 break;
             }
 
@@ -595,7 +698,7 @@ class ApifyScraperService
             }
 
             $items = $this->runActorAndFetchItems("TMBawM4LZpKN15DZX", $input);
-            if (self::isCircuitOpen()) {
+            if (self::isCircuitOpen("TMBawM4LZpKN15DZX")) {
                 break;
             }
             $kwCount = 0;

@@ -113,6 +113,7 @@ class CollectionResource extends JsonResource
             'date_from' => $this->date_from,
             'date_to' => $this->date_to,
             'comments_limit' => (string) ($this->comments_limit ?: '50'),
+            'platform_limits' => $this->platform_limits ?: null,
             'color' => $this->color,
             'status' => $this->status ?: ($resultsCount > 0 ? 'completed' : 'pending'),
             'error_message' => $errorMessage,

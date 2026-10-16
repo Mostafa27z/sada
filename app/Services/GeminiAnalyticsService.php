@@ -109,13 +109,13 @@ class GeminiAnalyticsService
     /**
      * Format comments across platforms into user prompt.
      */
-    protected function formatCommentsForPrompt(array $insta, array $fb, array $x, array $tiktok): string
+    protected function formatCommentsForPrompt(array $insta, array $fb, array $x, array $tiktok, array $web = []): string
     {
         $extractText = function (array $items): string {
             $texts = [];
             foreach ($items as $item) {
                 if (is_array($item)) {
-                    $texts[] = $item['text'] ?? $item['comment_text'] ?? json_encode($item, JSON_UNESCAPED_UNICODE);
+                    $texts[] = $item['text'] ?? $item['title'] ?? $item['comment_text'] ?? json_encode($item, JSON_UNESCAPED_UNICODE);
                 } else {
                     $texts[] = (string)$item;
                 }
@@ -128,6 +128,9 @@ class GeminiAnalyticsService
         $out .= "\n--- البلاتفورم هى Facebook ---\n" . $extractText($fb);
         $out .= "\n--- البلاتفورم هى X (Twitter) ---\n" . $extractText($x);
         $out .= "\n--- البلاتفورم هى TikTok ---\n" . $extractText($tiktok);
+        if (!empty($web)) {
+            $out .= "\n--- البلاتفورم هى الأخبار والمواقع الإلكترونية (Web) ---\n" . $extractText($web);
+        }
 
         return $out;
     }
@@ -224,6 +227,12 @@ class GeminiAnalyticsService
       "negative_count": 0,
       "neutral_count": 0,
       "platform_sentiment": "إيجابي / سلبي / محايد"
+    },
+    "web": {
+      "positive_count": 0,
+      "negative_count": 0,
+      "neutral_count": 0,
+      "platform_sentiment": "إيجابي / سلبي / محايد"
     }
   },
   "top_issues": [
@@ -238,7 +247,7 @@ class GeminiAnalyticsService
   "key_comments": [
     {
       "comment_text": "نص التعليق المهم كما هو",
-      "platform": "instagram / facebook / x / tiktok",
+      "platform": "instagram / facebook / x / tiktok / web",
       "type": "شكوى حادة / إشادة قوية / اقتراح مهم",
       "reason": "سبب اختيار هذا التعليق كتعليق هام"
     }
@@ -256,14 +265,14 @@ PROMPT;
     /**
      * Send post comments to Gemini LLM for sentiment analytics.
      */
-    public function analyzeSentiment(array $insta = [], array $fb = [], array $x = [], array $tiktok = [], ?array $rubric = null): array
+    public function analyzeSentiment(array $insta = [], array $fb = [], array $x = [], array $tiktok = [], ?array $rubric = null, array $web = []): array
     {
         if (empty($this->apiKey)) {
             Log::error("GOOGLE_API_KEY is missing in .env");
             return [];
         }
 
-        $formattedComments = $this->formatCommentsForPrompt($insta, $fb, $x, $tiktok);
+        $formattedComments = $this->formatCommentsForPrompt($insta, $fb, $x, $tiktok, $web);
         $userMessage = "إليك قائمة التعليقات الكلية مقسمة حسب المنصات:\n" . $formattedComments;
 
         $messages = [

@@ -29,6 +29,7 @@ class Collection extends Model
         'keywords',
         'sentiment_rubric',
         'comments_limit',
+        'platform_limits',
         'color',
         'status',
         'error_message',
@@ -37,6 +38,7 @@ class Collection extends Model
 
     protected $casts = [
         'sentiment_rubric' => 'array',
+        'platform_limits' => 'array',
     ];
 
     /**

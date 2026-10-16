@@ -7,6 +7,7 @@ use App\Http\Requests\Monitoring\StoreCollectionRequest;
 use App\Http\Resources\CollectionResource;
 use App\Models\Article;
 use App\Models\Collection;
+use App\Models\Tenant;
 use App\Support\ApiResponse;
 
 class CollectionController extends Controller
@@ -125,15 +126,9 @@ class CollectionController extends Controller
         $data = $request->validated();
         $data['created_by'] = $request->user()->id;
 
-        // 2. Enforce comments/articles limit per campaign (Trial: max 25)
-        $rawCommentsLimit = (int) ($data['comments_limit'] ?? 50);
-        if ($isTrial) {
-            $commentsLimit = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 25, 25);
-        } else {
-            $maxPerCampaign = $tenant?->plan?->max_articles_per_campaign ?? 1000;
-            $commentsLimit = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 50, $maxPerCampaign);
-        }
-        $data['comments_limit'] = $commentsLimit;
+        // 2. Enforce comments/articles limit per campaign and per-platform restricted to plan limits
+        $limitInfo = $this->resolveAndEnforceLimits($tenant, $data);
+        $commentsLimit = $limitInfo['total_limit'];
 
         if (array_key_exists('keywords', $data)) {
             if (is_array($data['keywords'])) {
@@ -243,14 +238,8 @@ class CollectionController extends Controller
             return $this->success(new CollectionResource($collection->fresh(['articles.comments'])), __('messages.updated'));
         }
 
-        $rawCommentsLimit = (int) ($data['comments_limit'] ?? $collection->comments_limit ?? 50);
-        if ($isTrial) {
-            $commentsLimit = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 25, 25);
-        } else {
-            $maxPerCampaign = $tenant?->plan?->max_articles_per_campaign ?? 1000;
-            $commentsLimit = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 50, $maxPerCampaign);
-        }
-        $data['comments_limit'] = $commentsLimit;
+        $limitInfo = $this->resolveAndEnforceLimits($tenant, $data);
+        $commentsLimit = $limitInfo['total_limit'];
 
         $data['status'] = Collection::STATUS_PENDING;
         $data['error_message'] = null;
@@ -302,6 +291,7 @@ class CollectionController extends Controller
         $rawPlats = !empty($data['platforms']) ? $data['platforms'] : explode(',', $collection->platform ?: 'x,facebook,instagram,web');
         $platforms = array_values(array_filter(array_map('trim', (array)$rawPlats)));
 
+        $platformLimits = $collection->platform_limits ?: ($data['platform_limits'] ?? null);
         $limit = intval($collection->comments_limit ?: ($data['comments_limit'] ?? 50));
         if ($limit <= 0) {
             $limit = 50;
@@ -315,7 +305,8 @@ class CollectionController extends Controller
             $collection->id,
             $collection->date_from,
             $collection->date_to,
-            $limit
+            $limit,
+            $platformLimits
         );
     }
 
@@ -436,5 +427,101 @@ class CollectionController extends Controller
         $collection->articles()->detach($articleId);
 
         return $this->success(null, __('messages.article_removed_from_collection'));
+    }
+
+    /**
+     * Resolve and enforce per-platform and campaign limits based on tenant plan.
+     */
+    protected function resolveAndEnforceLimits(?Tenant $tenant, array &$data): array
+    {
+        $isTrial = $tenant && $tenant->isTrial();
+        $maxPerCampaign = $isTrial ? 25 : ($tenant?->plan?->max_articles_per_campaign ?? 1000);
+
+        // Check tenant's remaining monthly article quota
+        if ($tenant) {
+            $usage = app(\App\Services\UsageLimitService::class)->getUsage($tenant);
+            $remainingMonthly = $usage['articles']['remaining'] ?? $maxPerCampaign;
+            if ($remainingMonthly < $maxPerCampaign) {
+                $maxPerCampaign = max(0, $remainingMonthly);
+            }
+        }
+
+        // Determine selected platforms
+        $platforms = [];
+        if (!empty($data['platforms']) && is_array($data['platforms'])) {
+            $platforms = array_values(array_filter(array_map('trim', $data['platforms'])));
+        } elseif (!empty($data['platform']) && is_string($data['platform'])) {
+            $platforms = array_values(array_filter(array_map('trim', explode(',', $data['platform']))));
+        }
+
+        if (empty($platforms)) {
+            $platforms = ['x', 'facebook', 'instagram', 'web'];
+        }
+
+        $platformLimits = [];
+
+        // Case A: User sent specific platform_limits map e.g. {"x": 20, "instagram": 10}
+        if (!empty($data['platform_limits']) && is_array($data['platform_limits'])) {
+            $rawLimits = $data['platform_limits'];
+            $totalRequested = 0;
+            foreach ($rawLimits as $plat => $lim) {
+                $cleanPlat = strtolower(trim((string)$plat));
+                $intLim = max(0, (int)$lim);
+                $platformLimits[$cleanPlat] = $intLim;
+                $totalRequested += $intLim;
+            }
+
+            // If total exceeds maxPerCampaign, enforce ceiling by scaling down or clamping
+            if ($totalRequested > $maxPerCampaign) {
+                if ($maxPerCampaign <= 0) {
+                    $platformLimits = array_fill_keys(array_keys($platformLimits), 0);
+                } else {
+                    $ratio = $maxPerCampaign / $totalRequested;
+                    $clampedTotal = 0;
+                    $keys = array_keys($platformLimits);
+                    $lastIdx = count($keys) - 1;
+                    foreach ($keys as $idx => $plat) {
+                        if ($idx === $lastIdx) {
+                            $platformLimits[$plat] = max(0, $maxPerCampaign - $clampedTotal);
+                        } else {
+                            $scaled = (int) floor($platformLimits[$plat] * $ratio);
+                            $platformLimits[$plat] = $scaled;
+                            $clampedTotal += $scaled;
+                        }
+                    }
+                }
+            }
+            $finalTotal = array_sum($platformLimits);
+        }
+        // Case B: User specified a single uniform platform_limit (e.g. 15 for each selected platform)
+        elseif (!empty($data['platform_limit']) && (int)$data['platform_limit'] > 0) {
+            $singlePlatLim = (int)$data['platform_limit'];
+            $totalReq = $singlePlatLim * count($platforms);
+            if ($totalReq > $maxPerCampaign) {
+                $singlePlatLim = max(1, intval(floor($maxPerCampaign / max(1, count($platforms)))));
+            }
+            foreach ($platforms as $p) {
+                $platformLimits[$p] = $singlePlatLim;
+            }
+            $finalTotal = array_sum($platformLimits);
+        }
+        // Case C: Standard comments_limit or default
+        else {
+            $rawCommentsLimit = (int) ($data['comments_limit'] ?? 50);
+            $finalTotal = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 50, $maxPerCampaign);
+            $perPlat = max(1, intval(ceil($finalTotal / max(1, count($platforms)))));
+            foreach ($platforms as $p) {
+                $platformLimits[$p] = $perPlat;
+            }
+        }
+
+        $data['comments_limit'] = $finalTotal;
+        $data['platform_limits'] = $platformLimits;
+
+        return [
+            'total_limit' => $finalTotal,
+            'platform_limits' => $platformLimits,
+            'max_allowed' => $maxPerCampaign,
+        ];
     }
 }

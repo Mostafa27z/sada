@@ -30,7 +30,8 @@ class ScrapeKeywordsJob implements ShouldQueue
         public ?int $collectionId = null,
         public ?string $dateFrom = null,
         public ?string $dateTo = null,
-        public int $limit = 50
+        public int $limit = 50,
+        public ?array $platformLimits = null
     ) {}
 
     public function handle(AiScraperService $aiService): void
@@ -52,15 +53,26 @@ class ScrapeKeywordsJob implements ShouldQueue
             $rubric = $tenant->getSentimentRubric();
         }
 
-        $result = $aiService->scrapeByKeywords(
-            $this->keywords,
-            $this->platforms,
-            $this->country,
-            $this->dateFrom,
-            $this->dateTo,
-            $this->limit,
-            $rubric
-        );
+        $result = $this->platformLimits !== null
+            ? $aiService->scrapeByKeywords(
+                $this->keywords,
+                $this->platforms,
+                $this->country,
+                $this->dateFrom,
+                $this->dateTo,
+                $this->limit,
+                $rubric,
+                $this->platformLimits
+            )
+            : $aiService->scrapeByKeywords(
+                $this->keywords,
+                $this->platforms,
+                $this->country,
+                $this->dateFrom,
+                $this->dateTo,
+                $this->limit,
+                $rubric
+            );
 
         if (($result['status'] ?? '') !== 'success') {
             Log::warning("ScrapeKeywordsJob failed for tenant {$this->tenantId}", ['result' => $result]);
@@ -79,18 +91,34 @@ class ScrapeKeywordsJob implements ShouldQueue
 
         $fromTs = $this->dateFrom ? strtotime($this->dateFrom . ' 00:00:00') : null;
         $toTs = $this->dateTo ? strtotime($this->dateTo . ' 23:59:59') : null;
-        $cutoffTime = time() - (30 * 86400);
+        $cutoffTime = time() - (365 * 2 * 86400);
 
+        $processedPlatforms = [];
         foreach ($postsByPlatform as $platformKey => $posts) {
             $platformName = match ($platformKey) {
                 'instagram_posts' => 'instagram',
                 'facebook_posts' => 'facebook',
                 'x_posts' => 'x',
                 'tiktok_posts' => 'tiktok',
+                'web_posts', 'other_posts' => 'web',
                 default => 'web',
             };
 
+            if (isset($processedPlatforms[$platformName]) && $platformKey === 'other_posts') {
+                continue;
+            }
+            $processedPlatforms[$platformName] = true;
+
+            $targetPlatLimit = isset($this->platformLimits[$platformName])
+                ? (int)$this->platformLimits[$platformName]
+                : (int)$this->limit;
+
+            $savedForPlatform = 0;
+
             foreach ($posts as $post) {
+                if ($savedForPlatform >= $targetPlatLimit) {
+                    break;
+                }
                 if (is_array($post)) {
                     $content = trim($post['text'] ?? '');
                     // Discard posts with empty, whitespace, or placeholder "Unknown" text
@@ -182,6 +210,7 @@ class ScrapeKeywordsJob implements ShouldQueue
                 if ($isExistingArticle) {
                     // Post was previously fetched for this tenant: preserve existing record and link without re-processing
                     $syncedArticleIds[] = $article->id;
+                    $savedForPlatform++;
                     if (is_array($post) && !empty($post['keyword'])) {
                         $kwRecord = \App\Models\Keyword::firstOrCreate(
                             ['tenant_id' => $this->tenantId, 'name' => $post['keyword']],
@@ -231,7 +260,7 @@ class ScrapeKeywordsJob implements ShouldQueue
                 $article->save();
 
                 $syncedArticleIds[] = $article->id;
-
+                $savedForPlatform++;
 
                 if (is_array($post) && !empty($post['keyword'])) {
                     $kwRecord = \App\Models\Keyword::firstOrCreate(
@@ -253,7 +282,7 @@ class ScrapeKeywordsJob implements ShouldQueue
         if ($this->collectionId) {
             $colRecord = Collection::withoutGlobalScopes()->find($this->collectionId);
             if ($colRecord) {
-                $colRecord->articles()->sync($syncedArticleIds);
+                $colRecord->articles()->syncWithoutDetaching($syncedArticleIds);
                 $colRecord->update([
                     'status' => Collection::STATUS_COMPLETED,
                     'error_message' => null,

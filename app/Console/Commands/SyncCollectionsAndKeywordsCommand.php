@@ -15,7 +15,7 @@ use Illuminate\Console\Command;
 class SyncCollectionsAndKeywordsCommand extends Command
 {
     protected $signature = 'sada:sync-all';
-    protected $description = 'Run scheduled 4-hour synchronization for active campaign links and keywords';
+    protected $description = 'Run scheduled daily synchronization for active campaign links and keywords';
 
     public function handle(): int
     {
@@ -101,7 +101,17 @@ class SyncCollectionsAndKeywordsCommand extends Command
             }
 
             if (!empty($keywords)) {
-                ScrapeKeywordsJob::dispatch($tenant->id, array_values(array_unique($keywords)));
+                $maxPerCampaign = $tenant->isTrial() ? 25 : ($tenant->plan?->max_articles_per_campaign ?? 1000);
+                ScrapeKeywordsJob::dispatch(
+                    $tenant->id,
+                    array_values(array_unique($keywords)),
+                    ['instagram', 'facebook', 'x', 'tiktok'],
+                    null,
+                    null,
+                    null,
+                    null,
+                    min(50, $maxPerCampaign)
+                );
                 $totalKeywordsDispatched += count($keywords);
             }
 
@@ -131,7 +141,11 @@ class SyncCollectionsAndKeywordsCommand extends Command
                         [$kwName],
                         !empty($platforms) ? $platforms : ['x', 'facebook', 'instagram', 'web'],
                         $kColl->country ?: 'SA',
-                        $kColl->id
+                        $kColl->id,
+                        $kColl->date_from,
+                        $kColl->date_to,
+                        (int) ($kColl->comments_limit ?: 50),
+                        $kColl->platform_limits ?: null
                     );
                     $totalKeywordsDispatched++;
                 }
@@ -140,7 +154,8 @@ class SyncCollectionsAndKeywordsCommand extends Command
             TenantContext::forgetTenant();
         }
 
-        $this->info("4-Hour synchronization complete. Dispatched {$totalLinksDispatched} link jobs and {$totalKeywordsDispatched} keywords.");
+        $this->info("Daily synchronization complete. Dispatched {$totalLinksDispatched} link jobs and {$totalKeywordsDispatched} keywords.");
         return Command::SUCCESS;
     }
 }
+
