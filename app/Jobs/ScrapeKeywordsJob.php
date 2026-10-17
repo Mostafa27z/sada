@@ -113,6 +113,8 @@ class ScrapeKeywordsJob implements ShouldQueue
                 ? (int)$this->platformLimits[$platformName]
                 : (int)$this->limit;
 
+            $savedForPlatform = 0;
+
             // Partition posts into in-range and fallback to guarantee platform quotas are met
             $inRangePosts = [];
             $fallbackPosts = [];

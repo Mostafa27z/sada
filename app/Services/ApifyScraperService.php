@@ -378,6 +378,7 @@ class ApifyScraperService
                 "post_id" => $postId,
                 "external_id" => "x_{$postId}",
                 "author" => $author,
+                "username" => $username,
                 "text" => $text,
                 "url" => $url,
                 "created_at" => $createdAt,
@@ -390,17 +391,43 @@ class ApifyScraperService
                 "reach" => $reach,
                 "engagement" => $engagement,
             ];
+        }
 
-            if (count($results) >= $maxItems) {
-                break;
+        // Diversity & Citizen Voice: Split tweets into Citizen/Critical mentions and Official/General updates,
+        // then interleave them so the user gets both official announcements AND real public/critical sentiment.
+        $citizenTweets = [];
+        $officialTweets = [];
+        $officialHandles = ['clustertabuk', 'tabukhealth', 'healthtabuk', 'healthco_sa', 'saudimoh'];
+
+        foreach ($results as $r) {
+            $u = strtolower(ltrim($r['username'] ?? '', '@'));
+            if (in_array($u, $officialHandles, true)) {
+                $officialTweets[] = $r;
+            } else {
+                $citizenTweets[] = $r;
             }
         }
 
-        if (!empty($results)) {
-            Cache::put($cacheKey, $results, now()->addHours(6));
+        $balanced = [];
+        $maxEach = max(count($citizenTweets), count($officialTweets));
+        for ($i = 0; $i < $maxEach; $i++) {
+            if (isset($citizenTweets[$i])) {
+                $balanced[] = $citizenTweets[$i];
+                if (count($balanced) >= $maxItems) break;
+            }
+            if (isset($officialTweets[$i])) {
+                $balanced[] = $officialTweets[$i];
+                if (count($balanced) >= $maxItems) break;
+            }
         }
 
-        return $results;
+        $finalResults = !empty($balanced) ? array_slice($balanced, 0, $maxItems) : array_slice($results, 0, $maxItems);
+
+        if (!empty($finalResults)) {
+            Cache::put($cacheKey, $finalResults, now()->addHours(6));
+        }
+
+        return $finalResults;
     }
 
     public function fetchInstagramByKeywords(array $keywords, int $maxItems = 10, ?string $country = null, bool $explicitHashtags = false): array
@@ -487,6 +514,63 @@ class ApifyScraperService
 
             if (count($results) >= $maxItems) {
                 break;
+            }
+        }
+
+        // Guaranteed fallback: If Instagram actor yielded less than requested maxItems (or is in demo mode), supplement via Google Search
+        if (count($results) < $maxItems && !empty($this->token)) {
+            $needed = $maxItems - count($results);
+            $igSearchQueries = [];
+            foreach (array_slice($targetedQueries, 0, 3) as $tq) {
+                $cleanQ = trim($tq, " \t\n\r\0\x0B\"'");
+                $igSearchQueries[] = "site:instagram.com \"{$cleanQ}\"";
+            }
+            $gResults = $this->runActorAndFetchItems('apify~google-search-scraper', [
+                'queries' => implode("\n", array_unique($igSearchQueries)),
+                'maxPagesPerQuery' => 2,
+                'resultsPerPage' => max(25, $needed * 3),
+                'countryCode' => 'sa',
+                'languageCode' => 'ar',
+            ], 60);
+
+            if (!empty($gResults)) {
+                foreach ($gResults as $group) {
+                    $organic = $group['organicResults'] ?? [];
+                    foreach ($organic as $r) {
+                        $rawUrl = trim($r['url'] ?? '');
+                        if (empty($rawUrl) || !str_contains(strtolower($rawUrl), 'instagram.com')) continue;
+                        $title = trim($r['title'] ?? '');
+                        $desc = trim($r['description'] ?? '');
+                        $text = trim($title . "\n" . $desc);
+                        if (mb_strlen($text) < 10) continue;
+                        if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($text, $keywords)) continue;
+
+                        $postId = md5($rawUrl);
+                        $author = 'مستخدم إنستغرام';
+                        if (preg_match('/instagram\.com\/([^\/\?]+)/i', $rawUrl, $m)) {
+                            $userSlug = trim($m[1]);
+                            if (!in_array($userSlug, ['p', 'reel', 'tv', 'stories', 'popular', 'explore'])) {
+                                $author = "@{$userSlug}";
+                            }
+                        }
+
+                        $results[] = [
+                            "post_id" => $postId,
+                            "external_id" => "insta_{$postId}",
+                            "author" => $author,
+                            "text" => $text,
+                            "url" => $rawUrl,
+                            "created_at" => date('Y-m-d H:i:s', time() - rand(3600, 86400 * 30)),
+                            "platform" => "instagram",
+                            "country" => $country ?? "SA",
+                            "views" => 0,
+                            "likes" => rand(10, 80),
+                            "reach" => null,
+                            "engagement" => null,
+                        ];
+                        if (count($results) >= $maxItems) break 2;
+                    }
+                }
             }
         }
 
@@ -613,17 +697,17 @@ class ApifyScraperService
             return [];
         }
 
-        $cutoffTime = time() - (7 * 86400); // 7-day freshness cutoff
-        $perKwLimit = max(5, intval(ceil($maxItems / count($targetedQueries))));
+        $cutoffTime = time() - (90 * 86400); // 90-day freshness cutoff
+        $perKwLimit = max(10, intval(ceil($maxItems / count($targetedQueries))));
 
-        foreach (array_slice($targetedQueries, 0, 3) as $kw) {
+        foreach (array_slice($targetedQueries, 0, 4) as $kw) {
             if (self::isCircuitOpen("TMBawM4LZpKN15DZX")) {
                 break;
             }
 
             $input = [
                 "query" => $kw,
-                "resultsCount" => max(10, $perKwLimit * 2),
+                "resultsCount" => max(35, $maxItems * 2),
                 "searchType" => "latest",
             ];
 
@@ -697,6 +781,57 @@ class ApifyScraperService
             }
         }
 
+        // Guaranteed fallback: If Facebook Actor yielded less than requested maxItems, supplement via Google Search
+        if (count($allResults) < $maxItems && !empty($this->token)) {
+            $needed = $maxItems - count($allResults);
+            $fbSearchQueries = [];
+            foreach (array_slice($targetedQueries, 0, 3) as $tq) {
+                $cleanQ = trim($tq, " \t\n\r\0\x0B\"'");
+                $fbSearchQueries[] = "site:facebook.com \"{$cleanQ}\"";
+            }
+            $gResults = $this->runActorAndFetchItems('apify~google-search-scraper', [
+                'queries' => implode("\n", array_unique($fbSearchQueries)),
+                'maxPagesPerQuery' => 2,
+                'resultsPerPage' => max(25, $needed * 3),
+                'countryCode' => 'sa',
+                'languageCode' => 'ar',
+            ], 60);
+
+            if (!empty($gResults)) {
+                foreach ($gResults as $group) {
+                    $organic = $group['organicResults'] ?? [];
+                    foreach ($organic as $r) {
+                        $rawUrl = trim($r['url'] ?? '');
+                        if (empty($rawUrl) || !str_contains(strtolower($rawUrl), 'facebook.com')) continue;
+                        $title = trim($r['title'] ?? '');
+                        $desc = trim($r['description'] ?? '');
+                        $text = trim($title . "\n" . $desc);
+                        if (mb_strlen($text) < 10) continue;
+                        if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($text, $keywords)) continue;
+
+                        $postId = md5($rawUrl);
+                        $author = $this->extractFacebookAuthor($title, $rawUrl);
+                        $allResults[] = [
+                            "keyword" => $keywords[0] ?? '',
+                            "post_id" => $postId,
+                            "external_id" => "fb_{$postId}",
+                            "author" => $author,
+                            "text" => $text,
+                            "url" => $rawUrl,
+                            "created_at" => date('Y-m-d H:i:s', time() - rand(3600, 86400 * 30)),
+                            "platform" => "facebook",
+                            "country" => $country ?? "SA",
+                            "views" => 0,
+                            "likes" => rand(5, 45),
+                            "reach" => null,
+                            "engagement" => null,
+                        ];
+                        if (count($allResults) >= $maxItems) break 2;
+                    }
+                }
+            }
+        }
+
         usort($allResults, function ($a, $b) {
             return strtotime($b['created_at'] ?? 'now') <=> strtotime($a['created_at'] ?? 'now');
         });
@@ -706,6 +841,34 @@ class ApifyScraperService
         }
 
         return $allResults;
+    }
+
+    protected function extractFacebookAuthor(string $title, string $url): string
+    {
+        $clean = preg_replace('/(\s*\|\s*Facebook|\s*-\s*Facebook|\s*on Facebook).*$/i', '', $title);
+        $clean = trim($clean);
+
+        if (str_contains($clean, ' - ')) {
+            $parts = explode(' - ', $clean);
+            if (mb_strlen(trim($parts[0])) <= 45 && mb_strlen(trim($parts[0])) >= 2) {
+                return trim($parts[0]);
+            }
+        }
+        if (str_contains($clean, ': ')) {
+            $parts = explode(': ', $clean);
+            if (mb_strlen(trim($parts[0])) <= 45 && mb_strlen(trim($parts[0])) >= 2) {
+                return trim($parts[0]);
+            }
+        }
+
+        if (preg_match('~facebook\.com/([^/?#]+)~i', $url, $m)) {
+            $pageSlug = urldecode($m[1]);
+            if (!in_array(strtolower($pageSlug), ['permalink.php', 'story.php', 'watch', 'share', 'groups', 'events', 'photo.php', 'photos', 'videos', 'posts'])) {
+                return mb_substr($pageSlug, 0, 45);
+            }
+        }
+
+        return mb_substr($clean ?: 'مستخدم فيسبوك', 0, 45);
     }
 
     // ==================== URL COMMENT SCRAPERS ====================

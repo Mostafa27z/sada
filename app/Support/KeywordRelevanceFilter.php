@@ -393,6 +393,17 @@ class KeywordRelevanceFilter
                 $kwQueries[] = $kw;
             }
 
+            // 4. Citizen Voice & Complaints Queries to capture critical feedback & negative sentiment
+            $cleanKw = trim($kw, " \t\n\r\0\x0B\"'");
+            $normKw = self::normalize($cleanKw);
+            if (str_contains($normKw, 'تبوك') && (str_contains($normKw, 'تجمع') || str_contains($normKw, 'صحي') || str_contains($normKw, 'طبي'))) {
+                $kwQueries[] = "@Clustertabuk";
+                $kwQueries[] = "\"تجمع تبوك\" (شكوى OR شكاوى OR طوارئ OR تأخير OR إهمال OR مواعيد OR معاناة OR مشاكل OR سيء OR ردوا)";
+            } elseif ($wordCount >= 2) {
+                $firstTwo = implode(' ', array_slice(array_filter(explode(' ', $cleanKw)), 0, 2));
+                $kwQueries[] = "\"{$firstTwo}\" (شكوى OR شكاوى OR تأخير OR إهمال OR مواعيد OR معاناة OR مشاكل OR سيء)";
+            }
+
             $queriesByKeyword[] = array_values(array_unique(array_filter($kwQueries)));
         }
 
@@ -544,6 +555,22 @@ class KeywordRelevanceFilter
         foreach ($cleanKeywords as $kw) {
             $normKw = self::normalize($kw);
             if (empty($normKw)) continue;
+
+            // Transliterated handles matching healthcare cluster handles (e.g. Clustertabuk, tabukhealth, tabukhc)
+            $citiesMap = [
+                'تبوك' => 'tabuk', 'الرياض' => 'riyadh', 'جدة' => 'jeddah', 'مكة' => 'makkah',
+                'المدينة' => 'madinah', 'الدمام' => 'dammam', 'القصيم' => 'qassim', 'عسير' => 'asir',
+                'جازان' => 'jazan', 'نجران' => 'najran', 'حائل' => 'hail', 'الجوف' => 'jouf',
+            ];
+            foreach ($citiesMap as $arCity => $enCity) {
+                if (str_contains($normKw, self::normalize($arCity))) {
+                    if (str_contains($normKw, 'تجمع') || str_contains($normKw, 'صحي') || str_contains($normKw, 'طبي') || str_contains($normKw, 'صحة')) {
+                        if (preg_match('/(?:cluster[_-]?' . $enCity . '|' . $enCity . '[_-]?(?:cluster|health|hc))/i', $content)) {
+                            return true;
+                        }
+                    }
+                }
+            }
 
             // Direct full keyword match in content
             if (mb_stripos($normContent, $normKw) !== false) {
