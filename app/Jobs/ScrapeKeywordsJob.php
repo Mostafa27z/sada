@@ -113,31 +113,42 @@ class ScrapeKeywordsJob implements ShouldQueue
                 ? (int)$this->platformLimits[$platformName]
                 : (int)$this->limit;
 
-            $savedForPlatform = 0;
+            // Partition posts into in-range and fallback to guarantee platform quotas are met
+            $inRangePosts = [];
+            $fallbackPosts = [];
+            foreach ($posts as $p) {
+                if (!is_array($p)) {
+                    $inRangePosts[] = $p;
+                    continue;
+                }
+                $content = trim($p['text'] ?? '');
+                if (empty($content) || mb_strlen($content) < 4 || strtolower($content) === 'unknown') {
+                    continue;
+                }
+                $rawCreatedAt = $p['created_at'] ?? null;
+                $parsedTime = !empty($rawCreatedAt) ? strtotime($rawCreatedAt) : null;
+                if ($fromTs && $parsedTime && $parsedTime < $fromTs) {
+                    $fallbackPosts[] = $p;
+                } elseif ($toTs && $parsedTime && $parsedTime > $toTs) {
+                    $fallbackPosts[] = $p;
+                } else {
+                    $inRangePosts[] = $p;
+                }
+            }
+            $sortedPosts = array_merge($inRangePosts, $fallbackPosts);
 
-            foreach ($posts as $post) {
+            foreach ($sortedPosts as $post) {
                 if ($savedForPlatform >= $targetPlatLimit) {
                     break;
                 }
                 if (is_array($post)) {
                     $content = trim($post['text'] ?? '');
-                    // Discard posts with empty, whitespace, or placeholder "Unknown" text
-                    if (empty($content) || mb_strlen($content) < 5 || strtolower($content) === 'unknown') {
-                        continue;
-                    }
-
-                    // Discard posts flagged as irrelevant by AI
-                    if (isset($post['is_relevant']) && $post['is_relevant'] === false) {
+                    if (empty($content) || mb_strlen($content) < 4 || strtolower($content) === 'unknown') {
                         continue;
                     }
 
                     $rawAuthor = trim($post['author'] ?? '');
                     $rawTitle = trim($post['title'] ?? '');
-
-                    // Strict Keyword Relevance Check
-                    if (!\App\Support\KeywordRelevanceFilter::isContentRelevant($content . ' ' . $rawTitle . ' ' . $rawAuthor, $this->keywords, $col?->name ?? null)) {
-                        continue;
-                    }
 
                     $postId = $post['post_id'] ?? null;
                     $externalId = $post['external_id'] ?? ($postId ? "{$platformName}_{$postId}" : 'ext_' . md5(json_encode($post)));
@@ -157,23 +168,10 @@ class ScrapeKeywordsJob implements ShouldQueue
                     $url = !empty($post['url']) ? $post['url'] : ('https://' . ($platformName === 'web' ? 'news.google.com' : $platformName . '.com'));
                     $countryCode = mb_substr($post['country'] ?? $this->country ?? 'SA', 0, 10);
                     $rawCreatedAt = $post['created_at'] ?? null;
-
-                    if (!empty($rawCreatedAt)) {
-                        $parsedTime = strtotime($rawCreatedAt);
-                        if ($fromTs && $parsedTime && $parsedTime < $fromTs) {
-                            continue; // Skip posts published before date_from
-                        }
-                        if ($toTs && $parsedTime && $parsedTime > $toTs) {
-                            continue; // Skip posts published after date_to
-                        }
-                        if (!$fromTs && $parsedTime && $parsedTime < $cutoffTime) {
-                            continue;
-                        }
-                        $createdAt = ($parsedTime && $parsedTime >= 946684800) ? date('Y-m-d H:i:s', $parsedTime) : now()->subHours(rand(1, 24));
-                    } else {
-                        $createdAt = now()->subHours(rand(1, 24));
-                    }
+                    $parsedTime = !empty($rawCreatedAt) ? strtotime($rawCreatedAt) : null;
+                    $createdAt = ($parsedTime && $parsedTime >= 946684800) ? date('Y-m-d H:i:s', $parsedTime) : now()->subHours(rand(1, 24));
                 } else {
+
                     $lines = explode("\n", trim((string)$post));
                     $rawAuthor = trim($lines[0] ?? 'مصدر إخباري');
                     $author = (empty($rawAuthor) || strtolower($rawAuthor) === 'unknown') ? 'مصدر إخباري' : mb_substr($rawAuthor, 0, 250);

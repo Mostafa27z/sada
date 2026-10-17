@@ -17,19 +17,12 @@ class ApifyScraperService
     }
 
     protected static array $brokenActors = [];
-    protected static ?int $globalCircuitOpenUntil = null;
-    protected static ?bool $connectivityVerified = null;
 
-    // Circuit breaker duration: 15 minutes (prevents wasting 40s per campaign on guaranteed failures)
-    protected const CIRCUIT_BREAK_SECONDS = 900;
+    // Per-actor cooldown duration: 60 seconds
+    protected const CIRCUIT_BREAK_SECONDS = 60;
 
     public static function isCircuitOpen(?string $actorId = null): bool
     {
-        // Global circuit breaker: if api.apify.com is unreachable, ALL actors are unreachable
-        if (self::$globalCircuitOpenUntil !== null && time() < self::$globalCircuitOpenUntil) {
-            return true;
-        }
-        // Per-actor circuit breaker
         if ($actorId !== null) {
             return isset(self::$brokenActors[$actorId]) && time() < self::$brokenActors[$actorId];
         }
@@ -43,50 +36,8 @@ class ApifyScraperService
         } else {
             self::$brokenActors = [];
         }
-        // On any successful request, clear the global circuit too
-        self::$globalCircuitOpenUntil = null;
-        self::$connectivityVerified = true;
     }
 
-    /**
-     * Trip the GLOBAL circuit breaker — all actors become unavailable.
-     * This prevents wasting 5-10s × 4 actors = 40s on networks where api.apify.com is unreachable.
-     */
-    protected static function tripGlobalCircuit(string $reason): void
-    {
-        self::$globalCircuitOpenUntil = time() + self::CIRCUIT_BREAK_SECONDS;
-        self::$connectivityVerified = false;
-        Log::warning("Apify GLOBAL circuit breaker tripped for " . self::CIRCUIT_BREAK_SECONDS . "s. Reason: {$reason}. All actors will use Google News fallback.");
-    }
-
-    /**
-     * Fast connectivity pre-check: test if api.apify.com is reachable via a 3-second TCP socket test.
-     * This runs ONCE per process lifecycle and prevents wasting time on unreachable networks.
-     */
-    public function checkConnectivity(): bool
-    {
-        if (self::$connectivityVerified !== null) {
-            return self::$connectivityVerified;
-        }
-
-        // If global circuit is open, don't even bother
-        if (self::$globalCircuitOpenUntil !== null && time() < self::$globalCircuitOpenUntil) {
-            self::$connectivityVerified = false;
-            return false;
-        }
-
-        $socket = @fsockopen('api.apify.com', 443, $errno, $errstr, 3);
-        if ($socket) {
-            fclose($socket);
-            self::$connectivityVerified = true;
-            Log::info('Apify connectivity check: PASSED (api.apify.com:443 reachable)');
-            return true;
-        }
-
-        self::$connectivityVerified = false;
-        self::tripGlobalCircuit("Connectivity pre-check failed: {$errstr} (errno: {$errno})");
-        return false;
-    }
 
     public function isEnabled(): bool
     {
@@ -134,20 +85,11 @@ class ApifyScraperService
             return [];
         }
 
-        // Global circuit breaker check (prevents 40s wasted on unreachable networks)
-        if (self::isCircuitOpen()) {
-            return [];
-        }
-
-        // Per-actor circuit breaker check
+        // Per-actor cooldown check
         if (self::isCircuitOpen($actorId)) {
             return [];
         }
 
-        // Fast connectivity pre-check (runs only once per process)
-        if (!$this->checkConnectivity()) {
-            return [];
-        }
 
         $timeoutSeconds = $timeoutSeconds ?: (int) config('services.apify.timeout', 180);
 
@@ -229,16 +171,8 @@ class ApifyScraperService
                 || str_contains($msg, 'cURL error 35')
                 || str_contains($msg, 'cURL error 7');
 
-            if ($isNetworkError) {
-                // Trip per-actor circuit breaker
-                self::$brokenActors[$actorId] = time() + self::CIRCUIT_BREAK_SECONDS;
-                // Trip GLOBAL circuit breaker — if we can't reach api.apify.com for this actor,
-                // we can't reach it for ANY actor. Skip all remaining actors instantly.
-                self::tripGlobalCircuit("Actor {$actorId}: {$msg}");
-                Log::warning("Apify Actor {$actorId} network failure ({$msg}). ALL actors disabled for " . self::CIRCUIT_BREAK_SECONDS . "s — using Google News fallback.");
-            } else {
-                Log::error("Apify Actor {$actorId} exception: " . $msg);
-            }
+            self::$brokenActors[$actorId] = time() + self::CIRCUIT_BREAK_SECONDS;
+            Log::warning("Apify Actor {$actorId} error ({$msg}). Cooldown set for " . self::CIRCUIT_BREAK_SECONDS . "s.");
             return [];
         }
     }
