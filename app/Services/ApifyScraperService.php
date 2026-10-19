@@ -1377,5 +1377,70 @@ class ApifyScraperService
 
         return $res;
     }
+
+    /**
+     * Fetch Google Maps reviews for a given location URL using Apify.
+     *
+     * @param string $mapsUrl
+     * @param int $maxReviews
+     * @param string $language
+     * @return array
+     */
+    public function fetchGoogleMapsReviews(string $mapsUrl, int $maxReviews = 50, string $language = 'ar'): array
+    {
+        // 1. Expand short URLs (e.g. maps.app.goo.gl) to full canonical Google Maps URLs
+        $resolvedUrl = $this->resolveGoogleMapsUrl($mapsUrl);
+
+        // 2. Validate language against Apify allowed enum values
+        $allowedLanguages = [
+            'ar', 'en', 'es', 'fr', 'de', 'it', 'tr', 'ru', 'pt-BR', 'pt-PT',
+            'ja', 'zh-CN', 'zh-TW', 'ko', 'hi', 'ur', 'fa', 'id', 'ms', 'nl',
+            'pl', 'sv', 'da', 'fi', 'no', 'cs', 'el', 'he', 'iw', 'th', 'vi'
+        ];
+        $lang = in_array(strtolower($language), $allowedLanguages) ? strtolower($language) : 'ar';
+
+        $input = [
+            'startUrls' => [['url' => $resolvedUrl]],
+            'maxReviews' => min($maxReviews, 200),
+            'reviewsSort' => 'newest',
+            'language' => $lang,
+            'reviewsOrigin' => 'all',
+            'scrapeReviewerName' => true,
+            'scrapeReviewerId' => true,
+            'scrapeReviewId' => true,
+            'scrapeResponseFromOwnerText' => true,
+        ];
+
+        // Primary actor: compass/crawler-google-places
+        return $this->runActorAndFetchItems('compass~crawler-google-places', $input, 180);
+    }
+
+    /**
+     * Resolve short Google Maps URLs (e.g. maps.app.goo.gl) to canonical URLs.
+     */
+    protected function resolveGoogleMapsUrl(string $url): string
+    {
+        if (str_contains($url, 'maps.app.goo.gl') || str_contains($url, 'goo.gl/maps')) {
+            try {
+                $ch = curl_init($url);
+                curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+                curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+                curl_exec($ch);
+                $effectiveUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+                curl_close($ch);
+
+                if ($effectiveUrl && filter_var($effectiveUrl, FILTER_VALIDATE_URL)) {
+                    return $effectiveUrl;
+                }
+            } catch (\Throwable $e) {
+                Log::warning("Failed to resolve short Google Maps URL {$url}: " . $e->getMessage());
+            }
+        }
+
+        return $url;
+    }
 }
+
 

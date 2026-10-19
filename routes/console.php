@@ -11,5 +11,6 @@ Artisan::command('inspire', function () {
 
 Schedule::command('sada:sync-all')->dailyAt('00:00');
 Schedule::command('sada:fetch-industry-news')->dailyAt('20:00')->timezone('Asia/Riyadh');
+Schedule::command('sada:sync-google-reviews --limit=20')->dailyAt('02:00')->timezone('Asia/Riyadh');
 
 

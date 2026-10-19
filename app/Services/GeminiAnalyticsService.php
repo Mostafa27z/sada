@@ -846,5 +846,163 @@ PROMPT;
             'recommendations' => ["مواصلة رصد الكلمات المفتاحية واستشعار الرأي العام"],
         ];
     }
+
+    /**
+     * Analyze Google Maps reviews for a specific location using Gemini AI.
+     * Generates sentiment score and summary for each review, plus an executive summary and recommendations for the location.
+     *
+     * @param string $businessName
+     * @param array $reviews List of reviews: [['id' => 1, 'rating' => 5, 'text' => '...', 'author_name' => '...']]
+     * @return array ['summary' => string, 'recommendations' => array, 'reviews' => array]
+     */
+    public function analyzeLocationReviews(string $businessName, array $reviews): array
+    {
+        if (empty($reviews)) {
+            return [
+                'summary' => "لا توجد مراجعات كافية متاحة حالياً لموقع {$businessName} لإجراء تحليل ذكي دقيق.",
+                'recommendations' => [
+                    'قم بدعوة عملائك وزوارك لمشاركة تقييماتهم وتجاربهم على خرائط Google.',
+                    'ضع رمز QR في الفرع يوجه الزوار مباشرة لصفحة التقييم على خرائط Google.',
+                ],
+                'reviews' => [],
+            ];
+        }
+
+        // Limit reviews sent to prompt if very large to prevent token exhaustion
+        $slicedReviews = array_slice($reviews, 0, 100);
+        $reviewsFormatted = [];
+        foreach ($slicedReviews as $rev) {
+            $id = $rev['id'] ?? null;
+            $rating = $rev['rating'] ?? 5;
+            $author = $rev['author_name'] ?? 'مستخدم';
+            $text = trim($rev['text'] ?? '');
+            if (empty($text)) {
+                $text = "تقييم بدون نص ({$rating} نجوم)";
+            }
+            $reviewsFormatted[] = "[ID: {$id} | Rating: {$rating}/5 | Author: {$author}]: {$text}";
+        }
+
+        $reviewsInput = implode("\n", $reviewsFormatted);
+
+        $prompt = <<<PROMPT
+أنت كبير خبراء تجربة العميل (Customer Experience & Sentiment Analyst) في منصة "مرآة".
+قم بإجراء تحليل ذكاء اصطناعي دقيق لمراجعات وتقييمات خرائط Google للفرع: "{$businessName}".
+
+قائمة المراجعات المرصودة للتحليل:
+{$reviewsInput}
+
+المطلوب:
+1. تحليل كل مراجعة من المراجعات المذكورة أعلاه بدقة وتحديد:
+   - id: رقم معرف المراجعة كما هو في المدخلات (عدد صحيح).
+   - sentiment: إما 'positive' أو 'neutral' أو 'negative'.
+   - sentiment_score: رقم عشري بين -1.0 (سلبي جداً) و +1.0 (إيجابي جداً)، 0.0 للمحايد.
+   - ai_analysis: جملة أو جملتين باللغة العربية توضح سبب المشاعر والعوامل المذكورة (مثل: "إشادة بنظافة المكان وحسن الضيافة"، "شكوى من تأخر استلام الطلب والازدحام").
+
+2. تقديم ملخص تنفيذي ذكي شامل (summary) باللغة العربية:
+   - ملخص مهني وشامل لتجربة العملاء العامة، نقاط القوة التي يثني عليها العملاء، والمشكلات المتكررة ونقاط الضعف التي تستوجب الانتباه.
+
+3. تقديم توصيات تشغيلية واستراتيجية قابلة للتنفيذ (recommendations):
+   - مصفوفة من 3 إلى 6 توصيات عملية باللغة العربية تهدف لتحسين تقييم الفرع وزيادة رضا الزوار وولائهم.
+
+أخرج النتيجة بصيغة JSON فقط متطابقة مع المخطط التالي وبدون أي كود ماركداون:
+{
+  "summary": "نص الملخص التنفيذي الشامل للفرع باللغة العربية...",
+  "recommendations": [
+    "توصية عملية 1...",
+    "توصية عملية 2...",
+    "توصية عملية 3..."
+  ],
+  "reviews": [
+    {
+      "id": 1,
+      "sentiment": "positive",
+      "sentiment_score": 0.85,
+      "ai_analysis": "إشادة بجودة الخدمة والسرعة"
+    }
+  ]
+}
+PROMPT;
+
+        $messages = [
+            ['role' => 'user', 'content' => $prompt],
+        ];
+
+        try {
+            $content = $this->callGemini($messages, 90);
+            if ($content) {
+                $cleaned = preg_replace('/```(?:json)?|```/iu', '', trim($content));
+                $json = json_decode(trim($cleaned), true);
+                if (is_array($json) && !empty($json['summary'])) {
+                    return [
+                        'summary' => (string) $json['summary'],
+                        'recommendations' => is_array($json['recommendations'] ?? null) ? $json['recommendations'] : [],
+                        'reviews' => is_array($json['reviews'] ?? null) ? $json['reviews'] : [],
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning("Gemini analyzeLocationReviews failed: " . $e->getMessage());
+        }
+
+        // Heuristic fallback if Gemini API call fails or quota exceeded
+        return $this->generateHeuristicLocationAnalysis($businessName, $reviews);
+    }
+
+    /**
+     * Fallback heuristic analysis for location reviews if AI call is unavailable.
+     */
+    protected function generateHeuristicLocationAnalysis(string $businessName, array $reviews): array
+    {
+        $total = count($reviews);
+        $positive = 0;
+        $negative = 0;
+        $neutral = 0;
+        $processedReviews = [];
+
+        foreach ($reviews as $rev) {
+            $rating = (int) ($rev['rating'] ?? 5);
+            $id = $rev['id'] ?? null;
+            if ($rating >= 4) {
+                $positive++;
+                $sentiment = 'positive';
+                $score = 0.8;
+                $analysis = 'تجربة ممتازة وانطباع إيجابي من العميل بناءً على التقييم.';
+            } elseif ($rating === 3) {
+                $neutral++;
+                $sentiment = 'neutral';
+                $score = 0.0;
+                $analysis = 'تجربة متوسطة تلبي التوقعات الأساسية مع وجود مجال للتحسين.';
+            } else {
+                $negative++;
+                $sentiment = 'negative';
+                $score = -0.8;
+                $analysis = 'ملاحظات سلبية حول التجربة تتطلب متابعة فورية لمعالجة أوجه القصور.';
+            }
+
+            if ($id) {
+                $processedReviews[] = [
+                    'id' => $id,
+                    'sentiment' => $sentiment,
+                    'sentiment_score' => $score,
+                    'ai_analysis' => $analysis,
+                ];
+            }
+        }
+
+        $posPercent = $total > 0 ? round(($positive / $total) * 100) : 0;
+        $summary = "تحليل مراجعات فرع {$businessName}: يعكس الرصد العام رضا العملاء بنسبة إيجابية تبلغ {$posPercent}٪ من إجمالي {$total} تقييم. تُشير التقييمات المرتفعة إلى رضا عام عن جودة الخدمات، مع الحاجة المستمرة للعناية بملاحظات العملاء الأقل تقييماً لتعزيز تجربة العميل.";
+
+        $recommendations = [
+            "الرد المستمر على جميع تقييمات العملاء خاصة السلبية لمعالجة الملاحظات وبناء الثقة.",
+            "مكافأة وتشجيع العملاء الراضين على مشاركة صور وتجارب تفصيلية إيجابية على خرائط Google.",
+            "التحسين الدوري لأوقات الاستجابة والخدمة بناءً على الملاحظات المتكررة.",
+        ];
+
+        return [
+            'summary' => $summary,
+            'recommendations' => $recommendations,
+            'reviews' => $processedReviews,
+        ];
+    }
 }
 

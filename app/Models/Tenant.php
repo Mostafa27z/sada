@@ -145,4 +145,12 @@ class Tenant extends Model
         $rubric = $this->settings['sentiment_rubric'] ?? null;
         return is_array($rubric) && !empty($rubric) ? $rubric : null;
     }
+
+    /**
+     * Locations monitored by this tenant.
+     */
+    public function locations(): HasMany
+    {
+        return $this->hasMany(TenantLocation::class);
+    }
 }

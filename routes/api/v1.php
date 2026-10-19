@@ -27,6 +27,8 @@ use App\Http\Controllers\Api\V1\TenantIndustryNewsController;
 use App\Http\Controllers\Api\V1\TenantNotificationController;
 use App\Http\Controllers\Api\V1\TenantRequestController;
 use App\Http\Controllers\Api\V1\TenantUserController;
+use App\Http\Controllers\Api\V1\TenantLocationController;
+use App\Http\Controllers\Api\V1\LocationReviewController;
 use App\Http\Controllers\Api\V1\TrendController;
 use App\Http\Controllers\Api\V1\UserRoleController;
 use App\Http\Controllers\Api\V1\WebhookController;
@@ -311,5 +313,21 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::delete('/chats/{id}/users/{userId}', [ChatRoomController::class, 'removeUser']);
         Route::get('/chats/{id}/messages', [ChatMessageController::class, 'index']);
         Route::post('/chats/{id}/messages', [ChatMessageController::class, 'send']);
+
+        // Google Maps Monitored Locations & Reviews Module
+        Route::prefix('tenant/locations')->group(function () {
+            Route::get('/', [TenantLocationController::class, 'index']);
+            Route::post('/', [TenantLocationController::class, 'store']);
+            Route::get('/google/connect-url', [TenantLocationController::class, 'googleConnectUrl']);
+            Route::post('/google/callback', [TenantLocationController::class, 'googleCallback']);
+            Route::get('/{id}', [TenantLocationController::class, 'show']);
+            Route::post('/{id}/sync', [TenantLocationController::class, 'sync']);
+            Route::post('/{id}/reanalyze', [TenantLocationController::class, 'reanalyzeWithAi']);
+            Route::delete('/{id}', [TenantLocationController::class, 'destroy']);
+
+            // Location Reviews
+            Route::get('/{locationId}/reviews', [LocationReviewController::class, 'index']);
+            Route::post('/{locationId}/reviews/{reviewId}/reply', [LocationReviewController::class, 'reply']);
+        });
     });
 });
