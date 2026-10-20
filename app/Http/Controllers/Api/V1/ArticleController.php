@@ -19,12 +19,18 @@ class ArticleController extends Controller
     {
         $query = Article::query()->with(['source', 'keywords']);
 
-        // Search in title or content
-        if ($request->has('search')) {
-            $search = $request->search;
+        // Search in title, content, summary, author, raw_data author, and source name
+        if ($request->has('search') && !empty($request->search)) {
+            $search = trim((string) $request->search);
             $query->where(function ($q) use ($search) {
                 $q->where('title', 'like', "%{$search}%")
-                  ->orWhere('content', 'like', "%{$search}%");
+                  ->orWhere('content', 'like', "%{$search}%")
+                  ->orWhere('summary', 'like', "%{$search}%")
+                  ->orWhere('author', 'like', "%{$search}%")
+                  ->orWhere('raw_data->author', 'like', "%{$search}%")
+                  ->orWhere('raw_data->raw_post->author', 'like', "%{$search}%")
+                  ->orWhere('raw_data->publisher', 'like', "%{$search}%")
+                  ->orWhereHas('source', fn($sq) => $sq->where('name', 'like', "%{$search}%"));
             });
         }
 
@@ -43,7 +49,28 @@ class ArticleController extends Controller
             $plat = strtolower(trim((string) $request->platform));
             $query->where(function ($q) use ($plat) {
                 $q->where('raw_data->platform', $plat)
-                  ->orWhereHas('source', fn($sq) => $sq->where('platform', $plat)->orWhere('type', $plat));
+                  ->orWhere('raw_data->platform', $plat . '_posts')
+                  ->orWhere('raw_data->platform', 'like', "%{$plat}%");
+
+                if ($plat === 'x') {
+                    $q->orWhere('raw_data->platform', 'twitter')
+                      ->orWhere('url', 'like', '%twitter.com%')
+                      ->orWhere('url', 'like', '%x.com%');
+                } elseif ($plat === 'facebook') {
+                    $q->orWhere('url', 'like', '%facebook.com%')
+                      ->orWhere('url', 'like', '%fb.com%')
+                      ->orWhere('url', 'like', '%fb.watch%');
+                } elseif ($plat === 'instagram') {
+                    $q->orWhere('url', 'like', '%instagram.com%');
+                } elseif ($plat === 'tiktok') {
+                    $q->orWhere('url', 'like', '%tiktok.com%');
+                } elseif ($plat === 'web') {
+                    $q->orWhere('raw_data->platform', 'web')
+                      ->orWhere('raw_data->platform', 'news')
+                      ->orWhere('raw_data->platform', 'rss');
+                }
+
+                $q->orWhereHas('source', fn($sq) => $sq->where('type', $plat));
             });
         }
 

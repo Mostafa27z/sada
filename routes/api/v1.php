@@ -224,6 +224,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('/tenant-notifications/test', [TenantNotificationController::class, 'testSend']);
 
         // Reports Module
+        Route::get('/reports/targets', [ReportController::class, 'targets']);
         Route::get('/reports', [ReportController::class, 'index']);
         Route::post('/reports', [ReportController::class, 'store']);
         Route::get('/reports/{id}', [ReportController::class, 'show']);

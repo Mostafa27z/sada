@@ -99,7 +99,7 @@ class CollectionController extends Controller
             }
         }
 
-        $perPage = (int) $request->get('per_page', 5);
+        $perPage = (int) $request->get('per_page', 50);
         if ($perPage > 0) {
             $collections = $query->paginate($perPage);
             return $this->paginated($collections, CollectionResource::class, $extraMeta);

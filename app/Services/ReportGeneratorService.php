@@ -30,6 +30,10 @@ class ReportGeneratorService
             return Tenant::find($report->tenant_id);
         });
 
+        if ($tenant) {
+            TenantContext::setTenant($tenant);
+        }
+
         $companyName = $tenant?->name ?? 'منصة مرآة';
         $companyLogo = $tenant?->logo;
         $primaryColor = $tenant?->settings['theme']['primary_color'] ?? '#2563EB';
@@ -40,11 +44,152 @@ class ReportGeneratorService
         $dateRange = $params['dateRange'] ?? '7days';
 
         // 1. Fetch relevant articles/collections
-        // 1. Fetch relevant articles/collections
         $collectionId = $params['collection_id'] ?? null;
-        if ($collectionId) {
-            $collection = Collection::find($collectionId);
-            $articles = $collection ? $collection->articles()->with('comments')->latest()->limit(50)->get() : collect();
+        $comments = collect();
+
+        if ($collectionId && $collectionId !== 'all') {
+            // Specific Campaign requested
+            $collection = Collection::withoutGlobalScopes()->with(['articles.comments'])->find($collectionId);
+            $articles = $collection
+                ? $collection->articles()->withoutGlobalScopes()->with('comments')->latest()->limit(100)->get()
+                : collect();
+
+            // Strict comments: ONLY from this collection's articles (never fall back to unrelated tenant comments)
+            $comments = $articles->flatMap(fn($a) => $a->comments)->values();
+
+            $params['articles'] = $articles->map(function ($a) use ($collection) {
+                return [
+                    'id' => $a->id,
+                    'title' => $a->title,
+                    'content' => $a->content,
+                    'author' => $a->author,
+                    'source' => ['name' => $a->source?->name ?? $a->author ?? $collection->name ?? 'حملة مستهدفة'],
+                    'campaign_name' => $collection->name,
+                    'platform' => $a->platform ?? 'web',
+                    'sentiment' => $a->sentiment ?? 'neutral',
+                    'published_at' => $a->published_at ?? $a->created_at,
+                    'url' => $a->url,
+                ];
+            })->values()->all();
+        } elseif ($scope === 'campaigns' || $scope === 'campaign' || $report->type === 'campaign') {
+            // ALL Campaigns requested: gather all tenant collections and their articles
+            $allCols = Collection::withoutGlobalScopes()
+                ->where('tenant_id', $report->tenant_id)
+                ->with(['articles.comments'])
+                ->latest()
+                ->get();
+
+            $collectedArticles = collect();
+            foreach ($allCols as $col) {
+                foreach ($col->articles as $art) {
+                    $art->campaign_name = $col->name;
+                    $collectedArticles->push($art);
+                }
+            }
+
+            $articles = $collectedArticles->unique('id')->values();
+            $comments = $articles->flatMap(fn($a) => $a->comments)->unique('id')->values();
+
+            $params['campaigns_summary'] = $allCols->map(function ($c) {
+                return [
+                    'id' => $c->id,
+                    'name' => $c->name,
+                    'count' => $c->articles->count(),
+                    'created_at' => (string) $c->created_at,
+                ];
+            })->values()->all();
+
+            $params['articles'] = $articles->map(function ($a) {
+                return [
+                    'id' => $a->id,
+                    'title' => $a->title,
+                    'content' => $a->content,
+                    'author' => $a->author,
+                    'source' => ['name' => $a->campaign_name ?? $a->source?->name ?? $a->author ?? 'حملة مرصودة'],
+                    'campaign_name' => $a->campaign_name ?? '',
+                    'platform' => $a->platform ?? 'web',
+                    'sentiment' => $a->sentiment ?? 'neutral',
+                    'published_at' => $a->published_at ?? $a->created_at,
+                    'url' => $a->url,
+                ];
+            })->values()->all();
+        } elseif ($scope === 'radar' || $scope === 'industry_news' || $report->type === 'radar') {
+            $newsQuery = \App\Models\TenantIndustryNews::query()->where('tenant_id', $report->tenant_id);
+            if (!empty($params['batch_date']) && $params['batch_date'] !== 'all') {
+                $newsQuery->where('batch_date', $params['batch_date']);
+            }
+            $rawNews = $newsQuery->latest('batch_date')->latest('created_at')->limit(50)->get();
+            $articles = $rawNews->map(function ($item) {
+                return (object) [
+                    'id' => $item->id,
+                    'title' => $item->title,
+                    'content' => $item->summary ?? $item->title,
+                    'summary' => $item->summary ?? $item->title,
+                    'source' => (object) ['name' => $item->source_name ?? 'رادار الأخبار'],
+                    'author' => $item->source_name ?? 'رادار الأخبار',
+                    'platform' => 'web',
+                    'sentiment' => 'positive',
+                    'url' => $item->source_url ?? '',
+                    'created_at' => $item->created_at ?? ($item->batch_date ? \Carbon\Carbon::parse($item->batch_date) : now()),
+                    'published_at' => $item->published_at ?? $item->batch_date,
+                    'comments' => collect(),
+                ];
+            });
+
+            // Save radar news snapshot directly into parameters for API & PDF
+            $params['radar_news'] = $rawNews->map(function ($item) {
+                return [
+                    'id' => $item->id,
+                    'title' => $item->title,
+                    'content' => $item->summary ?? $item->title,
+                    'summary' => $item->summary ?? $item->title,
+                    'source_name' => $item->source_name ?? 'رادار الأخبار',
+                    'author' => $item->source_name ?? 'رادار الأخبار',
+                    'url' => $item->source_url ?? '',
+                    'platform' => 'web',
+                    'sentiment' => 'positive',
+                    'published_at' => $item->published_at ?? $item->batch_date,
+                    'batch_date' => $item->batch_date,
+                    'created_at' => (string) $item->created_at,
+                    'category' => $item->category,
+                ];
+            })->values()->all();
+        } elseif ($scope === 'complaints' || $report->type === 'complaints') {
+            $compQuery = \App\Models\Complaint::query()->where('tenant_id', $report->tenant_id);
+            if (!empty($params['batch_date']) && $params['batch_date'] !== 'all') {
+                $compQuery->whereDate('created_at', $params['batch_date']);
+            }
+            $rawComps = $compQuery->latest()->limit(50)->get();
+            $articles = $rawComps->map(function ($c) {
+                return (object) [
+                    'id' => $c->id,
+                    'title' => 'بلاغ/شكوى: ' . ($c->customer_name ?? 'مستفيد') . ' - ' . ($c->subject ?? $c->title ?? 'شكوى واردة'),
+                    'content' => $c->description ?? $c->content,
+                    'summary' => $c->description ?? $c->content,
+                    'source' => (object) ['name' => 'بوابة الشكاوى وبلاغات المستفيدين'],
+                    'author' => $c->customer_name ?? 'مستفيد',
+                    'platform' => 'crm',
+                    'sentiment' => $c->status === 'resolved' ? 'positive' : ($c->priority === 'urgent' ? 'negative' : 'neutral'),
+                    'url' => '',
+                    'created_at' => $c->created_at,
+                    'published_at' => $c->created_at,
+                    'comments' => collect(),
+                ];
+            });
+
+            // Save complaints snapshot directly into parameters for API & PDF
+            $params['complaints'] = $rawComps->map(function ($c) {
+                return [
+                    'id' => $c->id,
+                    'title' => 'بلاغ/شكوى: ' . ($c->customer_name ?? 'مستفيد') . ' - ' . ($c->subject ?? $c->title ?? 'شكوى واردة'),
+                    'description' => $c->description ?? $c->content,
+                    'content' => $c->description ?? $c->content,
+                    'customer_name' => $c->customer_name ?? 'مستفيد',
+                    'status' => $c->status,
+                    'priority' => $c->priority,
+                    'created_at' => (string) $c->created_at,
+                ];
+            })->values()->all();
         } else {
             $articlesQuery = Article::query()->where('tenant_id', $report->tenant_id);
             if ($dateRange === 'today') {
@@ -61,30 +206,46 @@ class ReportGeneratorService
                 $articlesQuery->where('created_at', '>=', now()->subDays(30));
             }
             $articles = $articlesQuery->with('comments')->latest()->limit(50)->get();
+
+            if ($articles->isEmpty()) {
+                $articles = Article::query()->where('tenant_id', $report->tenant_id)->with('comments')->latest()->limit(50)->get();
+            }
+
+            $params['articles'] = $articles->map(function ($a) {
+                return [
+                    'id' => $a->id,
+                    'title' => $a->title,
+                    'content' => $a->content,
+                    'author' => $a->author,
+                    'source' => ['name' => $a->source?->name ?? $a->author ?? 'مصدر إعلامي'],
+                    'platform' => $a->platform ?? 'web',
+                    'sentiment' => $a->sentiment ?? 'neutral',
+                    'published_at' => $a->published_at ?? $a->created_at,
+                    'url' => $a->url,
+                ];
+            })->values()->all();
+
+            $comments = $articles->flatMap(fn($a) => $a->comments)->values();
         }
 
-        // If specific date filter yielded nothing, fallback to latest tenant articles
-        if ($articles->isEmpty()) {
-            $articles = Article::query()->where('tenant_id', $report->tenant_id)->with('comments')->latest()->limit(50)->get();
-        }
-
-        // Fetch captured audience comments (e.g. Facebook / Social comments)
-        $articleIds = $articles->pluck('id')->filter()->all();
-        $commentsQuery = \App\Models\Comment::query()->where('tenant_id', $report->tenant_id);
-        if (!empty($articleIds)) {
-            $commentsQuery->where(function ($q) use ($articleIds, $report) {
-                $q->whereIn('article_id', $articleIds)
-                  ->orWhere('tenant_id', $report->tenant_id);
-            });
-        }
-        $comments = $commentsQuery->latest()->limit(50)->get();
+        // Save comments snapshot
+        $params['comments'] = $comments->map(function ($c) {
+            return [
+                'id' => $c->id,
+                'author' => $c->author ?? $c->author_name ?? 'متابع',
+                'comment_text' => $c->comment_text ?? $c->content ?? '',
+                'sentiment' => $c->sentiment ?? 'neutral',
+                'likes_count' => $c->likes_count ?? 0,
+                'created_at' => (string) $c->created_at,
+            ];
+        })->values()->all();
 
         // 2. Metrics calculation
         $total = $articles->count();
         $pos = $articles->where('sentiment', 'positive')->count();
         $neu = $articles->where('sentiment', 'neutral')->count();
         $neg = $articles->where('sentiment', 'negative')->count();
-        $commentsCount = $comments->count() > 0 ? $comments->count() : $articles->sum(fn ($a) => $a->comments->count());
+        $commentsCount = $comments->count();
 
         $stats = [
             'total' => $total,
@@ -196,6 +357,81 @@ class ReportGeneratorService
                     'dateRange' => 'today',
                 ],
             ]);
+
+            $this->generate($report);
+            return $report->fresh();
+        });
+    }
+
+    /**
+     * Generate News Radar PDF report for a given tenant and date.
+     */
+    public function generateRadarReport(Tenant $tenant, ?string $batchDate = null): ?Report
+    {
+        return TenantContext::withoutTenancy(function () use ($tenant, $batchDate) {
+            $date = $batchDate ? \Carbon\Carbon::parse($batchDate)->format('Y-m-d') : now()->format('Y-m-d');
+            $report = Report::where('tenant_id', $tenant->id)
+                ->where('type', 'radar')
+                ->where(function ($q) use ($date) {
+                    $q->where('parameters->batch_date', $date)
+                      ->orWhere('name', 'like', "%{$date}%");
+                })
+                ->first();
+
+            if (!$report) {
+                $report = Report::create([
+                    'tenant_id' => $tenant->id,
+                    'name' => 'تقرير رادار الأخبار اليومي - ' . $date,
+                    'type' => 'radar',
+                    'format' => 'pdf',
+                    'status' => Report::STATUS_PENDING,
+                    'parameters' => [
+                        'scope' => 'radar',
+                        'batch_date' => $date,
+                        'dateRange' => $date,
+                    ],
+                ]);
+            } else {
+                $params = is_array($report->parameters) ? $report->parameters : (json_decode($report->parameters ?? '[]', true) ?: []);
+                $params['scope'] = 'radar';
+                $params['batch_date'] = $date;
+                $params['dateRange'] = $date;
+                $report->update(['parameters' => $params]);
+            }
+
+            $this->generate($report);
+            return $report->fresh();
+        });
+    }
+
+    /**
+     * Generate Complaints PDF report for a given tenant.
+     */
+    public function generateComplaintsReport(Tenant $tenant, ?string $dateRange = 'today'): ?Report
+    {
+        return TenantContext::withoutTenancy(function () use ($tenant, $dateRange) {
+            $today = now()->format('Y-m-d');
+            $report = Report::where('tenant_id', $tenant->id)
+                ->where('type', 'complaints')
+                ->where(function ($q) use ($today) {
+                    $q->where('name', 'like', "%{$today}%")
+                      ->orWhereDate('created_at', now()->today());
+                })
+                ->first();
+
+            if (!$report) {
+                $report = Report::create([
+                    'tenant_id' => $tenant->id,
+                    'name' => 'تقرير الشكاوى وبلاغات المستفيدين - ' . $today,
+                    'type' => 'complaints',
+                    'format' => 'pdf',
+                    'status' => Report::STATUS_PENDING,
+                    'parameters' => [
+                        'scope' => 'complaints',
+                        'dateRange' => $dateRange,
+                    ],
+                ]);
+            }
 
             $this->generate($report);
             return $report->fresh();

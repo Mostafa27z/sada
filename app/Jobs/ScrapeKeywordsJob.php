@@ -287,12 +287,6 @@ class ScrapeKeywordsJob implements ShouldQueue
                     'status' => Collection::STATUS_COMPLETED,
                     'error_message' => null,
                 ]);
-
-                try {
-                    app(\App\Services\ReportGeneratorService::class)->generateCampaignReport($colRecord);
-                } catch (\Throwable $e) {
-                    \Illuminate\Support\Facades\Log::warning("Failed to auto-generate keyword campaign PDF report: " . $e->getMessage());
-                }
             }
         }
 

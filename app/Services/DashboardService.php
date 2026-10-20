@@ -67,9 +67,22 @@ class DashboardService
             $neutralCount = (clone $articlesQuery)->where('sentiment', 'neutral')->count();
 
             $platformCounts = ['x' => 0, 'web' => 0, 'instagram' => 0, 'facebook' => 0, 'tiktok' => 0];
-            $articlesForPlatforms = (clone $articlesQuery)->with('source')->get(['id', 'tenant_id', 'source_id', 'raw_data']);
+            $articlesForPlatforms = (clone $articlesQuery)->with('source')->get(['id', 'tenant_id', 'source_id', 'raw_data', 'url']);
             foreach ($articlesForPlatforms as $art) {
-                $p = strtolower($art->raw_data['platform'] ?? ($art->source?->type ?? 'web'));
+                $p = strtolower($art->raw_data['platform'] ?? ($art->source?->type ?? ''));
+                if (empty($p) || $p === 'web' || $p === 'social') {
+                    if (!empty($art->url)) {
+                        if (str_contains($art->url, 'facebook.com') || str_contains($art->url, 'fb.com') || str_contains($art->url, 'fb.watch')) {
+                            $p = 'facebook';
+                        } elseif (str_contains($art->url, 'instagram.com')) {
+                            $p = 'instagram';
+                        } elseif (str_contains($art->url, 'tiktok.com')) {
+                            $p = 'tiktok';
+                        } elseif (str_contains($art->url, 'twitter.com') || str_contains($art->url, 'x.com')) {
+                            $p = 'x';
+                        }
+                    }
+                }
                 if (str_contains($p, 'x') || str_contains($p, 'twitter')) {
                     $platformCounts['x']++;
                 } elseif (str_contains($p, 'insta')) {
