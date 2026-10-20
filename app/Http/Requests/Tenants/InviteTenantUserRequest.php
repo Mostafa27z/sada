@@ -20,6 +20,7 @@ class InviteTenantUserRequest extends FormRequest
             'role' => ['sometimes', 'nullable', 'string'],
             'avatar' => ['sometimes', 'nullable'],
             'status' => ['sometimes', 'nullable', 'string', 'in:active,inactive,suspended,invited'],
+            'password' => ['sometimes', 'nullable', 'string', 'min:6', 'max:100'],
         ];
     }
 }

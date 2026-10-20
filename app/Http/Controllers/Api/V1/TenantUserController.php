@@ -32,7 +32,14 @@ class TenantUserController extends Controller
         }
 
         $users = TenantContext::withoutTenancy(function () use ($tenant) {
-            return $tenant->users()->get();
+            return $tenant->users()
+                ->where(function ($q) {
+                    $q->whereNull('tenant_user.role_id')
+                      ->orWhereNotIn('tenant_user.role_id', function ($sub) {
+                          $sub->select('id')->from('roles')->where('slug', \App\Models\Role::SUPER_ADMIN);
+                      });
+                })
+                ->get();
         });
 
         return $this->success(UserResource::collection($users));
@@ -55,7 +62,9 @@ class TenantUserController extends Controller
             $request->validated('name'),
             $request->validated('phone'),
             $request->validated('status'),
-            $request->file('avatar') ?? $request->validated('avatar')
+            $request->file('avatar') ?? $request->validated('avatar'),
+            $request->validated('password'),
+            $request->validated('role')
         );
 
         return $this->created(
@@ -87,8 +96,10 @@ class TenantUserController extends Controller
             'name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'email' => ['sometimes', 'nullable', 'string', 'email', 'max:255'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'role' => ['sometimes', 'nullable', 'string'],
             'status' => ['sometimes', 'nullable', 'string', 'in:active,inactive,suspended,invited'],
             'avatar' => ['sometimes', 'nullable'],
+            'password' => ['sometimes', 'nullable', 'string', 'min:6', 'max:100'],
         ]);
 
         if ($request->hasFile('avatar')) {

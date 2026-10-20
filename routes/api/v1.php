@@ -184,8 +184,13 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::delete('/users/{user}', [TenantUserController::class, 'remove']);
         Route::post('/users/{user}/roles', [UserRoleController::class, 'assignRole']);
 
-        // Roles in active tenant
+        // Roles & Permissions in active tenant
         Route::get('/roles', [RoleController::class, 'index']);
+        Route::post('/roles', [RoleController::class, 'store']);
+        Route::get('/roles/{id}', [RoleController::class, 'show']);
+        Route::put('/roles/{id}', [RoleController::class, 'update']);
+        Route::delete('/roles/{id}', [RoleController::class, 'destroy']);
+        Route::get('/permissions', [RoleController::class, 'permissions']);
 
         // Tenant Global Sentiment Rubric Settings
         Route::get('/tenant/sentiment-rubric', [TenantController::class, 'getSentimentRubric']);

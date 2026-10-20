@@ -14,9 +14,25 @@ class UserResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
-        $role = $this->isSuperAdmin() 
+        $currentRole = $this->currentRole();
+        $isSuper = $this->isSuperAdmin();
+
+        $role = $isSuper 
             ? 'super_admin' 
-            : ($this->currentRole()?->slug ?? 'tenant_owner');
+            : ($currentRole?->slug ?? 'tenant_owner');
+
+        $roleName = $isSuper
+            ? 'مدير النظام الفائق'
+            : ($currentRole?->name ?? 'مالك المؤسسة');
+
+        if ($isSuper) {
+            $permissions = \App\Models\Permission::pluck('slug')->toArray();
+        } elseif ($currentRole) {
+            $currentRole->loadMissing('permissions');
+            $permissions = $currentRole->permissions->pluck('slug')->toArray();
+        } else {
+            $permissions = [];
+        }
 
         $tenant = $this->currentTenant;
 
@@ -28,6 +44,8 @@ class UserResource extends JsonResource
             'avatar' => $this->avatar,
             'status' => $this->status,
             'role' => $role,
+            'role_name' => $roleName,
+            'permissions' => array_values(array_unique($permissions)),
             'companyName' => $tenant?->name ?? 'منصة مرآة',
             'current_tenant_id' => $this->current_tenant_id,
             'current_tenant' => $tenant ? [
