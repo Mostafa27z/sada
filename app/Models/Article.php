@@ -43,6 +43,10 @@ class Article extends Model
         'raw_data' => 'array',
     ];
 
+    protected $appends = [
+        'platform',
+    ];
+
     protected static function boot(): void
     {
         parent::boot();
@@ -73,5 +77,40 @@ class Article extends Model
     public function comments(): HasMany
     {
         return $this->hasMany(Comment::class);
+    }
+
+    public function getPlatformAttribute(): string
+    {
+        $rawPlat = strtolower((string)($this->raw_data['platform'] ?? ($this->raw_data['raw_post']['platform'] ?? ($this->source?->type ?? ''))));
+        if (empty($rawPlat) || $rawPlat === 'web' || $rawPlat === 'social') {
+            if (!empty($this->author)) {
+                $authorLower = strtolower($this->author);
+                if (str_contains($authorLower, 'facebook') || str_contains($authorLower, 'فيسبوك')) return 'facebook';
+                if (str_contains($authorLower, 'instagram') || str_contains($authorLower, 'انستغرام') || str_contains($authorLower, 'إنستغرام')) return 'instagram';
+                if (str_contains($authorLower, 'tiktok') || str_contains($authorLower, 'تيك')) return 'tiktok';
+                if (str_contains($authorLower, 'twitter') || str_contains($authorLower, 'تويتر') || $authorLower === 'x') return 'x';
+            }
+            if (!empty($this->url)) {
+                if (str_contains($this->url, 'facebook.com') || str_contains($this->url, 'fb.com') || str_contains($this->url, 'fb.watch')) {
+                    return 'facebook';
+                } elseif (str_contains($this->url, 'instagram.com')) {
+                    return 'instagram';
+                } elseif (str_contains($this->url, 'tiktok.com')) {
+                    return 'tiktok';
+                } elseif (str_contains($this->url, 'twitter.com') || str_contains($this->url, 'x.com')) {
+                    return 'x';
+                }
+            }
+        }
+        if (str_contains($rawPlat, 'x') || str_contains($rawPlat, 'twitter')) {
+            return 'x';
+        } elseif (str_contains($rawPlat, 'insta')) {
+            return 'instagram';
+        } elseif (str_contains($rawPlat, 'face')) {
+            return 'facebook';
+        } elseif (str_contains($rawPlat, 'tik')) {
+            return 'tiktok';
+        }
+        return 'web';
     }
 }
