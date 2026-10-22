@@ -264,8 +264,13 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/complaints', [ComplaintController::class, 'index']);
         Route::get('/complaints/summary', [ComplaintController::class, 'summary']);
         Route::post('/complaints/summary/regenerate', [ComplaintController::class, 'regenerateSummary']);
+        Route::get('/complaints/agents', [ComplaintController::class, 'agents']);
         Route::get('/complaints/{id}', [ComplaintController::class, 'show']);
         Route::patch('/complaints/{id}/status', [ComplaintController::class, 'updateStatus']);
+        Route::patch('/complaints/{id}/stage', [ComplaintController::class, 'updateStage']);
+        Route::post('/complaints/{id}/assign', [ComplaintController::class, 'assign']);
+        Route::post('/complaints/{id}/notes', [ComplaintController::class, 'addNote']);
+        Route::post('/complaints/{id}/reanalyze', [ComplaintController::class, 'reanalyze']);
         Route::delete('/complaints/{id}', [ComplaintController::class, 'destroy']);
 
         // Topic Trends Discovery Module

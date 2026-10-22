@@ -36,6 +36,9 @@ class RoleAndPermissionSeeder extends Seeder
             // 7. Complaints
             ['name' => 'استعراض شكاوى العملاء', 'slug' => 'view_complaints', 'category' => 'complaints', 'description' => 'استعراض بلاغات وشكاوى العملاء ومؤشرات الأداء'],
             ['name' => 'معالجة وإدارة الشكاوى', 'slug' => 'manage_complaints', 'category' => 'complaints', 'description' => 'تحديث حالة الشكاوى وتدوين الملاحظات وتصدير رمز QR'],
+            ['name' => 'إضافة وتدوين ملاحظات الشكاوى', 'slug' => 'add_complaint_notes', 'category' => 'complaints', 'description' => 'كتابة تقارير الاتصال والملاحظات الداخلية حول تذاكر الشكاوى'],
+            ['name' => 'تحديث مرحلة الشكوى', 'slug' => 'change_complaint_stage', 'category' => 'complaints', 'description' => 'تحديث مرحلة معالجة الشكوى عبر مسار دورة الحياة'],
+            ['name' => 'تعيين التذاكر للموظفين', 'slug' => 'assign_complaints', 'category' => 'complaints', 'description' => 'إسناد تذاكر الشكاوى لممثلي خدمة العملاء أو إعادة تعيينها'],
 
             // 8. Smart Chat AI
             ['name' => 'المحادثة الذكية والتسويق', 'slug' => 'use_smart_chat', 'category' => 'ai', 'description' => 'التفاعل مع مستشار التسويق الذكي وغرف المحادثات الفورية'],
@@ -100,6 +103,7 @@ class RoleAndPermissionSeeder extends Seeder
                     'view_reputation',
                     'view_beneficiary_voice',
                     'view_complaints', 'manage_complaints',
+                    'add_complaint_notes', 'change_complaint_stage', 'assign_complaints',
                     'use_smart_chat',
                     'view_reports', 'manage_reports',
                     'manage_services',
@@ -107,6 +111,19 @@ class RoleAndPermissionSeeder extends Seeder
                     'manage_settings',
                     'manage_keywords', 'manage_sources', 'view_articles',
                     'manage_articles', 'manage_alerts', 'manage_api',
+                ],
+            ],
+            [
+                'name' => 'ممثل خدمة العملاء والدعم الفني',
+                'slug' => Role::CUSTOMER_SUPPORT,
+                'description' => 'متابعة وإدارة تذاكر الشكاوى، التواصل مع العملاء، تدوين الملاحظات وتحديث مراحل الحل',
+                'is_system' => true,
+                'permissions' => [
+                    'view_dashboard',
+                    'view_complaints',
+                    'manage_complaints',
+                    'add_complaint_notes',
+                    'change_complaint_stage',
                 ],
             ],
             [

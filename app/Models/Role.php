@@ -14,6 +14,7 @@ class Role extends Model
     const SUPER_ADMIN = 'super_admin';
     const TENANT_OWNER = 'tenant_owner';
     const TENANT_ADMIN = 'tenant_admin';
+    const CUSTOMER_SUPPORT = 'customer_support';
     const ANALYST = 'analyst';
     const VIEWER = 'viewer';
 

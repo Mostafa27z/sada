@@ -20,6 +20,12 @@ class Complaint extends Model
         'priority',
         'ai_recommendation',
         'status',
+        'assigned_to',
+        'stage',
+        'is_analyzed',
+        'analyzed_at',
+        'first_responded_at',
+        'resolved_at',
     ];
 
     /**
@@ -29,7 +35,26 @@ class Complaint extends Model
      */
     protected $casts = [
         'rate' => 'integer',
+        'is_analyzed' => 'boolean',
+        'analyzed_at' => 'datetime',
+        'first_responded_at' => 'datetime',
+        'resolved_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
+
+    public function assignedUser()
+    {
+        return $this->belongsTo(User::class, 'assigned_to');
+    }
+
+    public function activities()
+    {
+        return $this->hasMany(ComplaintActivity::class)->latest();
+    }
+
+    public function notes()
+    {
+        return $this->hasMany(ComplaintActivity::class)->whereIn('type', ['note', 'call_log'])->latest();
+    }
 }
