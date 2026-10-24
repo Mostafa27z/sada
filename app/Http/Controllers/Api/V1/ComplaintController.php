@@ -417,12 +417,17 @@ class ComplaintController extends Controller
                 })
                 ->get()
                 ->map(function ($u) {
+                    $roleModel = $u->currentRole();
+                    $roleSlug = $roleModel?->slug ?? ($u->pivot->is_owner ? 'tenant_owner' : 'member');
+                    $isCustomerSupport = ($roleSlug === \App\Models\Role::CUSTOMER_SUPPORT || str_contains($roleSlug, 'support'));
                     return [
                         'id' => $u->id,
                         'name' => $u->name,
                         'email' => $u->email,
                         'avatar' => $u->avatar,
-                        'role' => $u->pivot->is_owner ? 'المالك' : ($u->roles()->first()?->name ?? 'عضو'),
+                        'role' => $u->pivot->is_owner ? 'مالك مساحة العمل' : ($roleModel?->name ?? 'عضو'),
+                        'role_slug' => $roleSlug,
+                        'is_customer_support' => $isCustomerSupport,
                     ];
                 });
         });

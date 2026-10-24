@@ -27,6 +27,8 @@ class ComplaintResource extends JsonResource
                 'name' => $this->assignedUser->name,
                 'email' => $this->assignedUser->email,
                 'avatar' => $this->assignedUser->avatar,
+                'role' => $this->assignedUser->currentRole()?->name ?? 'ممثل خدمة العملاء والدعم الفني',
+                'role_slug' => $this->assignedUser->currentRole()?->slug ?? 'customer_support',
             ] : null,
             'first_responded_at' => $this->first_responded_at?->toISOString(),
             'resolved_at' => $this->resolved_at?->toISOString(),

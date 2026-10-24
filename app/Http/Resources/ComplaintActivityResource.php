@@ -18,6 +18,8 @@ class ComplaintActivityResource extends JsonResource
                 'name' => $this->user->name,
                 'email' => $this->user->email,
                 'avatar' => $this->user->avatar,
+                'role' => $this->user->currentRole()?->name ?? 'عضو',
+                'role_slug' => $this->user->currentRole()?->slug ?? 'member',
             ] : null,
             'type' => $this->type,
             'comment' => $this->comment,
