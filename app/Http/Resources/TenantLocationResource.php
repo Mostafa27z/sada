@@ -27,6 +27,8 @@ class TenantLocationResource extends JsonResource
             'is_verified_owner'   => (bool) $this->is_verified_owner,
             'can_reply'           => (bool) $this->can_reply,
             'sync_status'         => $this->sync_status,
+            'has_google_location' => !empty($this->maps_url),
+            'complaints_count'    => $this->complaints()->count(),
             'last_synced_at'      => $this->last_synced_at?->toISOString(),
             'last_error_message'  => $this->last_error_message,
             'ai_summary'          => $this->ai_summary,

@@ -26,14 +26,30 @@ class ComplaintController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Complaint::query()->with(['assignedUser', 'activities.user']);
-
-        if ($request->filled('status') && $request->input('status') !== 'all') {
-            $query->where('status', $request->input('status'));
-        }
+        $query = Complaint::query()->with(['assignedUser', 'activities.user', 'location']);
 
         if ($request->filled('stage') && $request->input('stage') !== 'all') {
-            $query->where('stage', $request->input('stage'));
+            $stageFilter = $request->input('stage');
+            if ($stageFilter === 'processing') {
+                $query->whereIn('stage', ['processing', 'investigating']);
+            } elseif ($stageFilter === 'waiting_beneficiary') {
+                $query->whereIn('stage', ['waiting_beneficiary', 'waiting_customer']);
+            } else {
+                $query->where(function ($q) use ($stageFilter) {
+                    $q->where('stage', $stageFilter)->orWhere('status', $stageFilter);
+                });
+            }
+        } elseif ($request->filled('status') && $request->input('status') !== 'all') {
+            $statusFilter = $request->input('status');
+            if ($statusFilter === 'processing') {
+                $query->whereIn('stage', ['processing', 'investigating']);
+            } elseif ($statusFilter === 'waiting_beneficiary') {
+                $query->whereIn('stage', ['waiting_beneficiary', 'waiting_customer']);
+            } else {
+                $query->where(function ($q) use ($statusFilter) {
+                    $q->where('stage', $statusFilter)->orWhere('status', $statusFilter);
+                });
+            }
         }
 
         if ($request->filled('assigned_to') && $request->input('assigned_to') !== 'all') {
@@ -64,13 +80,26 @@ class ComplaintController extends Controller
             $query->where('rate', $request->input('rate'));
         }
 
+        if ($request->filled('location_id') && $request->input('location_id') !== 'all') {
+            $locationId = $request->input('location_id');
+            if ($locationId === 'unassigned') {
+                $query->whereNull('tenant_location_id');
+            } else {
+                $query->where('tenant_location_id', (int) $locationId);
+            }
+        }
+
         if ($request->filled('search')) {
             $search = $request->input('search');
             $query->where(function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
                   ->orWhere('email', 'like', "%{$search}%")
                   ->orWhere('phone', 'like', "%{$search}%")
-                  ->orWhere('opinion', 'like', "%{$search}%");
+                  ->orWhere('opinion', 'like', "%{$search}%")
+                  ->orWhere('tracking_number', 'like', "%{$search}%");
+                if (is_numeric($search)) {
+                    $q->orWhere('id', (int) $search);
+                }
             });
         }
 
@@ -103,6 +132,74 @@ class ComplaintController extends Controller
         }
 
         return $this->success(new TenantComplaintSummaryResource($summary));
+    }
+
+    /**
+     * Get complaints statistics and stage distribution for the current tenant.
+     *
+     * @return JsonResponse
+     */
+    public function stats(): JsonResponse
+    {
+        $tenantId = TenantContext::getTenantId();
+        $query = Complaint::where('tenant_id', $tenantId);
+
+        $total = (clone $query)->count();
+        $newCount = (clone $query)->where('stage', 'new')->count();
+        $underReviewCount = (clone $query)->where('stage', 'under_review')->count();
+        $contactedCount = (clone $query)->where('stage', 'contacted')->count();
+        $processingCount = (clone $query)->whereIn('stage', ['processing', 'investigating'])->count();
+        $waitingBeneficiaryCount = (clone $query)->whereIn('stage', ['waiting_beneficiary', 'waiting_customer'])->count();
+        $resolvedCount = (clone $query)->where('stage', 'resolved')->count();
+        $closedCount = (clone $query)->where('stage', 'closed')->count();
+        $escalatedCount = (clone $query)->where('stage', 'escalated')->count();
+        $reopenedCount = (clone $query)->where('stage', 'reopened')->count();
+
+        $activePendingCount = $newCount + $underReviewCount + $contactedCount + $processingCount + $waitingBeneficiaryCount + $escalatedCount + $reopenedCount;
+        $completedCount = $resolvedCount + $closedCount;
+
+        $resolutionRate = $total > 0 ? round(($completedCount / $total) * 100, 1) : 0;
+        $avgRate = (clone $query)->whereNotNull('rate')->avg('rate') ?? 0;
+        $avgRate = round((float) $avgRate, 1);
+
+        $priorities = [
+            'crisis' => (clone $query)->where('priority', 'crisis')->count(),
+            'negative' => (clone $query)->where('priority', 'negative')->count(),
+            'neutral' => (clone $query)->where('priority', 'neutral')->count(),
+            'positive' => (clone $query)->where('priority', 'positive')->count(),
+        ];
+
+        $branches = \App\Models\TenantLocation::where('tenant_id', $tenantId)->get(['id', 'business_name', 'address']);
+        $byBranch = [];
+        foreach ($branches as $branch) {
+            $byBranch[] = [
+                'id' => $branch->id,
+                'name' => $branch->business_name,
+                'address' => $branch->address,
+                'count' => (clone $query)->where('tenant_location_id', $branch->id)->count(),
+            ];
+        }
+
+        return $this->success([
+            'total' => $total,
+            'active_pending' => $activePendingCount,
+            'completed' => $completedCount,
+            'resolution_rate' => $resolutionRate,
+            'average_rating' => $avgRate,
+            'by_stage' => [
+                'new' => $newCount,
+                'under_review' => $underReviewCount,
+                'contacted' => $contactedCount,
+                'processing' => $processingCount,
+                'waiting_beneficiary' => $waitingBeneficiaryCount,
+                'resolved' => $resolvedCount,
+                'closed' => $closedCount,
+                'escalated' => $escalatedCount,
+                'reopened' => $reopenedCount,
+            ],
+            'by_priority' => $priorities,
+            'by_branch' => $byBranch,
+        ], 'Complaints statistics calculated successfully');
     }
 
     /**
@@ -139,7 +236,7 @@ class ComplaintController extends Controller
      */
     public function show(int $id): JsonResponse
     {
-        $complaint = Complaint::with(['assignedUser', 'activities.user'])->find($id);
+        $complaint = Complaint::with(['assignedUser', 'activities.user', 'location'])->find($id);
 
         if (!$complaint) {
             return $this->error('Complaint not found', 404);
@@ -220,6 +317,7 @@ class ComplaintController extends Controller
         $request->validate([
             'comment' => ['required', 'string', 'max:5000'],
             'type' => ['sometimes', 'string', 'in:note,call_log'],
+            'is_visible_to_customer' => ['sometimes', 'boolean'],
         ]);
 
         $complaint = Complaint::with(['assignedUser', 'activities.user'])->find($id);
@@ -229,6 +327,7 @@ class ComplaintController extends Controller
         }
 
         $type = $request->input('type', 'note');
+        $isVisibleToCustomer = $request->boolean('is_visible_to_customer', false);
 
         // Create activity log
         $activity = $complaint->activities()->create([
@@ -236,6 +335,7 @@ class ComplaintController extends Controller
             'user_id' => auth()->id(),
             'type' => $type,
             'comment' => $request->input('comment'),
+            'is_visible_to_customer' => $isVisibleToCustomer,
         ]);
 
         // Track first response time if this is first support interaction
@@ -245,7 +345,7 @@ class ComplaintController extends Controller
                 $complaint->status = 'in_progress';
             }
             if ($complaint->stage === 'new') {
-                $complaint->stage = ($type === 'call_log' ? 'contacted' : 'investigating');
+                $complaint->stage = ($type === 'call_log' ? 'contacted' : 'under_review');
             }
         }
 
@@ -277,7 +377,20 @@ class ComplaintController extends Controller
      */
     public function updateStage(Request $request, int $id, ComplaintAiService $aiService): JsonResponse
     {
-        $validStages = ['new', 'contacted', 'investigating', 'waiting_customer', 'escalated', 'resolved', 'closed'];
+        $validStages = [
+            'new',
+            'under_review',
+            'contacted',
+            'processing',
+            'waiting_beneficiary',
+            'resolved',
+            'closed',
+            'escalated',
+            'reopened',
+            // Legacy fallbacks
+            'investigating',
+            'waiting_customer',
+        ];
 
         $request->validate([
             'stage' => ['required', 'string', 'in:' . implode(',', $validStages)],
@@ -293,40 +406,49 @@ class ComplaintController extends Controller
         $oldStage = $complaint->stage ?? 'new';
         $newStage = $request->input('stage');
 
+        // Normalize legacy stage inputs
+        if ($newStage === 'investigating') {
+            $newStage = 'processing';
+        } elseif ($newStage === 'waiting_customer') {
+            $newStage = 'waiting_beneficiary';
+        }
+
         if ($oldStage === $newStage) {
             return $this->success(new ComplaintResource($complaint));
         }
 
         $stageLabels = [
-            'new' => 'جديدة',
-            'contacted' => 'تم التواصل مع العميل',
-            'investigating' => 'قيد الفحص والتحقيق',
-            'waiting_customer' => 'بانتظار رد العميل',
-            'escalated' => 'مُصعدة للإدارة',
+            'new' => 'جديد',
+            'under_review' => 'قيد المراجعة',
+            'contacted' => 'تم التواصل مع المستفيد',
+            'processing' => 'قيد المعالجة',
+            'waiting_beneficiary' => 'بانتظار رد المستفيد',
             'resolved' => 'تم الحل',
-            'closed' => 'مغلقة نهائياً',
+            'closed' => 'مغلق',
+            'escalated' => 'تم التصعيد',
+            'reopened' => 'أعيد فتح الشكوى',
+            // Legacy labels
+            'investigating' => 'قيد المعالجة',
+            'waiting_customer' => 'بانتظار رد المستفيد',
         ];
 
         $oldLabel = $stageLabels[$oldStage] ?? $oldStage;
         $newLabel = $stageLabels[$newStage] ?? $newStage;
 
         $complaint->stage = $newStage;
+        $complaint->status = $newStage; // Logically identical
 
-        // Automatically align status and SLA timestamps with stage
-        if (in_array($newStage, ['contacted', 'investigating', 'waiting_customer', 'escalated'])) {
+        // Automatically align SLA timestamps with stage
+        if (in_array($newStage, ['under_review', 'contacted', 'processing', 'waiting_beneficiary', 'escalated'])) {
             if (!$complaint->first_responded_at) {
                 $complaint->first_responded_at = now();
             }
-            if ($complaint->status === 'pending') {
-                $complaint->status = 'in_progress';
+        } elseif ($newStage === 'reopened') {
+            $complaint->resolved_at = null; // Reopen ticket resets resolved timestamp
+            if (!$complaint->first_responded_at) {
+                $complaint->first_responded_at = now();
             }
-        } elseif ($newStage === 'resolved') {
-            $complaint->status = 'resolved';
-            if (!$complaint->resolved_at) {
-                $complaint->resolved_at = now();
-            }
-        } elseif ($newStage === 'closed') {
-            $complaint->status = 'closed';
+        } elseif (in_array($newStage, ['resolved', 'closed'])) {
             if (!$complaint->resolved_at) {
                 $complaint->resolved_at = now();
             }
@@ -346,6 +468,7 @@ class ComplaintController extends Controller
             'user_id' => auth()->id(),
             'type' => 'stage_change',
             'comment' => $comment,
+            'is_visible_to_customer' => true,
             'metadata' => [
                 'from_stage' => $oldStage,
                 'to_stage' => $newStage,
@@ -442,37 +565,11 @@ class ComplaintController extends Controller
      * @param int $id
      * @return JsonResponse
      */
-    public function updateStatus(Request $request, int $id): JsonResponse
+    public function updateStatus(Request $request, int $id, ComplaintAiService $aiService): JsonResponse
     {
-        $request->validate([
-            'status' => ['required', 'string', 'in:pending,in_progress,resolved,closed'],
-        ]);
-
-        $complaint = Complaint::with(['assignedUser', 'activities.user'])->find($id);
-
-        if (!$complaint) {
-            return $this->error('Complaint not found', 404);
-        }
-
-        $oldStatus = $complaint->status;
-        $newStatus = $request->input('status');
-
-        $complaint->status = $newStatus;
-        $complaint->is_analyzed = false;
-        if (in_array($newStatus, ['resolved', 'closed']) && !$complaint->resolved_at) {
-            $complaint->resolved_at = now();
-        }
-        $complaint->save();
-
-        $complaint->activities()->create([
-            'tenant_id' => $complaint->tenant_id,
-            'user_id' => auth()->id(),
-            'type' => 'status_change',
-            'comment' => "تم تغيير حالة التذكرة من \"{$oldStatus}\" إلى \"{$newStatus}\"",
-            'metadata' => ['from' => $oldStatus, 'to' => $newStatus],
-        ]);
-
-        return $this->success(new ComplaintResource($complaint), 'تم تحديث حالة الشكوى بنجاح');
+        $newStage = $request->input('status') ?? $request->input('stage');
+        $request->merge(['stage' => $newStage]);
+        return $this->updateStage($request, $id, $aiService);
     }
 
     /**

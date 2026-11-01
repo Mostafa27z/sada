@@ -133,6 +133,36 @@ class SuperAdminController extends Controller
     }
 
     /**
+     * Update sidebar features / pages availability for a specific tenant.
+     */
+    public function updateTenantFeatures(Request $request, int $tenantId): JsonResponse
+    {
+        $validated = $request->validate([
+            'features' => ['required', 'array'],
+            'features.*' => ['boolean'],
+        ]);
+
+        $tenant = TenantContext::withoutTenancy(fn () => Tenant::find($tenantId));
+
+        if (!$tenant) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        $settings = $tenant->settings ?? [];
+        $currentFeatures = $settings['sidebar_features'] ?? [];
+        $settings['sidebar_features'] = array_merge($currentFeatures, $validated['features']);
+
+        $tenant->update([
+            'settings' => $settings,
+        ]);
+
+        return $this->success(
+            new TenantResource($tenant->fresh(['subscription.plan'])),
+            'تم تحديث صلاحيات ميزات وصفحات العميل بنجاح'
+        );
+    }
+
+    /**
      * Get system-wide platform metrics.
      */
     public function metrics()

@@ -11,7 +11,14 @@ class ComplaintResource extends JsonResource
     {
         return [
             'id' => $this->id,
+            'tracking_number' => $this->tracking_number ?? "{$this->id}",
             'tenant_id' => $this->tenant_id,
+            'tenant_location_id' => $this->tenant_location_id,
+            'location' => $this->location ? [
+                'id' => $this->location->id,
+                'business_name' => $this->location->business_name,
+                'address' => $this->location->address,
+            ] : null,
             'name' => $this->name,
             'email' => $this->email,
             'phone' => $this->phone,
@@ -19,7 +26,7 @@ class ComplaintResource extends JsonResource
             'rate' => $this->rate,
             'priority' => $this->priority ?? 'neutral',
             'ai_recommendation' => $this->ai_recommendation,
-            'status' => $this->status,
+            'status' => $this->stage ?? $this->status ?? 'new',
             'stage' => $this->stage ?? 'new',
             'assigned_to' => $this->assigned_to,
             'assigned_user' => $this->assignedUser ? [

@@ -77,6 +77,7 @@ Route::post('/tenant-requests', [TenantRequestController::class, 'store']);
 Route::get('/public/qr-code', [PublicComplaintController::class, 'generateQrCode']);
 Route::get('/public/tenant-info', [PublicComplaintController::class, 'getTenantInfo']);
 Route::post('/public/complaints', [PublicComplaintController::class, 'store']);
+Route::get('/public/complaints/track/{trackingNumber}', [PublicComplaintController::class, 'track']);
 
 /*
 |--------------------------------------------------------------------------
@@ -136,6 +137,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('/tenants/{tenant}/plan', [SuperAdminController::class, 'assignPlan']);
         Route::post('/tenants/{tenant}/approve', [SuperAdminController::class, 'approveTenant']);
         Route::post('/tenants/{tenant}/reject', [SuperAdminController::class, 'rejectTenant']);
+        Route::patch('/tenants/{tenant}/features', [SuperAdminController::class, 'updateTenantFeatures']);
 
         // Tenant Join Requests Management
         Route::get('/tenant-requests', [TenantRequestController::class, 'index']);
@@ -262,6 +264,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
         // Complaints Module
         Route::get('/complaints', [ComplaintController::class, 'index']);
+        Route::get('/complaints/stats', [ComplaintController::class, 'stats']);
         Route::get('/complaints/summary', [ComplaintController::class, 'summary']);
         Route::post('/complaints/summary/regenerate', [ComplaintController::class, 'regenerateSummary']);
         Route::get('/complaints/agents', [ComplaintController::class, 'agents']);

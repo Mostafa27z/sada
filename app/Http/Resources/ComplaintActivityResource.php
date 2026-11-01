@@ -23,6 +23,7 @@ class ComplaintActivityResource extends JsonResource
             ] : null,
             'type' => $this->type,
             'comment' => $this->comment,
+            'is_visible_to_customer' => (bool) $this->is_visible_to_customer,
             'metadata' => $this->metadata,
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),

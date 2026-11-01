@@ -12,6 +12,8 @@ class Complaint extends Model
 
     protected $fillable = [
         'tenant_id',
+        'tenant_location_id',
+        'tracking_number',
         'name',
         'email',
         'phone',
@@ -27,6 +29,29 @@ class Complaint extends Model
         'first_responded_at',
         'resolved_at',
     ];
+
+    protected static function booted()
+    {
+        static::creating(function ($complaint) {
+            if (empty($complaint->tracking_number)) {
+                $complaint->tracking_number = self::generateTrackingNumber();
+            }
+        });
+    }
+
+    public static function generateTrackingNumber(): string
+    {
+        $date = date('Ymd');
+        $todayCount = self::withoutGlobalScopes()->whereDate('created_at', today())->count();
+        $order = str_pad((string)($todayCount + 1), 2, '0', STR_PAD_LEFT);
+
+        do {
+            $rand = mt_rand(1000, 9999);
+            $trackingNumber = "{$date}_{$order}_{$rand}";
+        } while (self::withoutGlobalScopes()->where('tracking_number', $trackingNumber)->exists());
+
+        return $trackingNumber;
+    }
 
     /**
      * The attributes that should be cast.
@@ -56,5 +81,10 @@ class Complaint extends Model
     public function notes()
     {
         return $this->hasMany(ComplaintActivity::class)->whereIn('type', ['note', 'call_log'])->latest();
+    }
+
+    public function location()
+    {
+        return $this->belongsTo(TenantLocation::class, 'tenant_location_id')->withoutGlobalScopes();
     }
 }

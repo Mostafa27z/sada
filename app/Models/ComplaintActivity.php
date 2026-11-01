@@ -17,10 +17,12 @@ class ComplaintActivity extends Model
         'user_id',
         'type', // 'note', 'stage_change', 'status_change', 'assignment', 'call_log'
         'comment',
+        'is_visible_to_customer',
         'metadata',
     ];
 
     protected $casts = [
+        'is_visible_to_customer' => 'boolean',
         'metadata' => 'array',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',

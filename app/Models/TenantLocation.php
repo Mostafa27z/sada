@@ -64,4 +64,12 @@ class TenantLocation extends Model
     {
         return $this->hasMany(LocationReview::class, 'tenant_location_id');
     }
+
+    /**
+     * Customer complaints received for this specific branch.
+     */
+    public function complaints(): HasMany
+    {
+        return $this->hasMany(Complaint::class, 'tenant_location_id');
+    }
 }

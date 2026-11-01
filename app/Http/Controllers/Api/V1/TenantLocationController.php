@@ -34,76 +34,80 @@ class TenantLocationController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'maps_url' => ['required', 'string'],
-            'business_name' => ['nullable', 'string', 'max:255'],
+            'maps_url' => ['nullable', 'string'],
+            'business_name' => ['required_without:maps_url', 'nullable', 'string', 'max:255'],
             'address' => ['nullable', 'string', 'max:255'],
             'latitude' => ['nullable', 'numeric'],
             'longitude' => ['nullable', 'numeric'],
         ]);
 
-        $mapsUrl = trim($validated['maps_url']);
+        $mapsUrl = !empty($validated['maps_url']) ? trim($validated['maps_url']) : null;
         $expandedUrl = $mapsUrl;
-
-        // Auto-resolve shortened links (like maps.app.goo.gl or goo.gl/maps) to retrieve the full URL
-        if (str_contains($mapsUrl, 'maps.app.goo.gl') || str_contains($mapsUrl, 'goo.gl/maps') || str_contains($mapsUrl, 'g.co/kgs')) {
-            try {
-                $response = Http::timeout(6)->withoutRedirecting()->get($mapsUrl);
-                $redirectUrl = $response->header('Location');
-                if ($redirectUrl) {
-                    $expandedUrl = $redirectUrl;
-                }
-            } catch (\Throwable $e) {
-                Log::warning("Could not resolve short Google Maps URL {$mapsUrl}: " . $e->getMessage());
-            }
-        }
-
-        // Auto-extract coordinates if not explicitly provided
         $latitude = isset($validated['latitude']) ? (float) $validated['latitude'] : null;
         $longitude = isset($validated['longitude']) ? (float) $validated['longitude'] : null;
-
-        if ($latitude === null || $longitude === null) {
-            // Check exact pin coordinates (!3d... !4d...)
-            if (preg_match('/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/', $expandedUrl, $coords)) {
-                $latitude = (float) $coords[1];
-                $longitude = (float) $coords[2];
-            } elseif (preg_match('/@(-?\d+\.\d+),(-?\d+\.\d+)/', $expandedUrl, $coords)) {
-                $latitude = (float) $coords[1];
-                $longitude = (float) $coords[2];
-            } elseif (preg_match('/(?:ll|q)=(-?\d+\.\d+),(-?\d+\.\d+)/', $expandedUrl, $coords)) {
-                $latitude = (float) $coords[1];
-                $longitude = (float) $coords[2];
-            }
-        }
-
-        // Auto-extract or fallback business name
         $businessName = $validated['business_name'] ?? null;
-        if (!$businessName) {
-            // Try extracting from /maps/place/Business+Name/ in the expanded URL
-            if (preg_match('/\/maps\/place\/([^\/@?]+)/', $expandedUrl, $matches)) {
-                $businessName = urldecode(str_replace('+', ' ', $matches[1]));
-            } else {
-                $businessName = 'Monitored Google Location';
+
+        if ($mapsUrl) {
+            // Auto-resolve shortened links (like maps.app.goo.gl or goo.gl/maps) to retrieve the full URL
+            if (str_contains($mapsUrl, 'maps.app.goo.gl') || str_contains($mapsUrl, 'goo.gl/maps') || str_contains($mapsUrl, 'g.co/kgs')) {
+                try {
+                    $response = Http::timeout(6)->withoutRedirecting()->get($mapsUrl);
+                    $redirectUrl = $response->header('Location');
+                    if ($redirectUrl) {
+                        $expandedUrl = $redirectUrl;
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning("Could not resolve short Google Maps URL {$mapsUrl}: " . $e->getMessage());
+                }
+            }
+
+            // Auto-extract coordinates if not explicitly provided
+            if ($latitude === null || $longitude === null) {
+                // Check exact pin coordinates (!3d... !4d...)
+                if (preg_match('/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/', $expandedUrl, $coords)) {
+                    $latitude = (float) $coords[1];
+                    $longitude = (float) $coords[2];
+                } elseif (preg_match('/@(-?\d+\.\d+),(-?\d+\.\d+)/', $expandedUrl, $coords)) {
+                    $latitude = (float) $coords[1];
+                    $longitude = (float) $coords[2];
+                } elseif (preg_match('/(?:ll|q)=(-?\d+\.\d+),(-?\d+\.\d+)/', $expandedUrl, $coords)) {
+                    $latitude = (float) $coords[1];
+                    $longitude = (float) $coords[2];
+                }
+            }
+
+            // Auto-extract or fallback business name
+            if (!$businessName) {
+                if (preg_match('/\/maps\/place\/([^\/@?]+)/', $expandedUrl, $matches)) {
+                    $businessName = urldecode(str_replace('+', ' ', $matches[1]));
+                } else {
+                    $businessName = 'Monitored Google Location';
+                }
             }
         }
 
         $location = TenantLocation::create([
-            'business_name' => $businessName,
+            'business_name' => $businessName ?: 'فرع بدون اسم',
             'address' => $validated['address'] ?? null,
             'latitude' => $latitude,
             'longitude' => $longitude,
             'maps_url' => $mapsUrl,
-            'provider' => 'apify',
+            'provider' => $mapsUrl ? 'apify' : 'manual',
             'can_reply' => false,
             'is_verified_owner' => false,
-            'sync_status' => 'pending',
+            'sync_status' => $mapsUrl ? 'pending' : 'idle',
         ]);
 
-        // Dispatch initial backfill scraping job immediately
-        SyncLocationReviewsJob::dispatch($location->id, 50);
+        if ($mapsUrl) {
+            // Dispatch initial backfill scraping job immediately
+            SyncLocationReviewsJob::dispatch($location->id, 50);
+        }
 
         return $this->created(
             new TenantLocationResource($location),
-            'Location added successfully. Initial review sync has been queued.'
+            $mapsUrl
+                ? 'تمت إضافة الفرع بنجاح وجاري مزامنة مراجعات خرائط Google.'
+                : 'تمت إضافة الفرع بنجاح وتوليد رمز ورابط الشكاوى المخصص له.'
         );
     }
 

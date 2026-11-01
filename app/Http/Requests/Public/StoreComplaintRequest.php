@@ -20,6 +20,8 @@ class StoreComplaintRequest extends FormRequest
             'phone' => ['nullable', 'string', 'max:50'],
             'opinion' => ['required', 'string', 'max:5000'],
             'rate' => ['required', 'integer', 'min:1', 'max:5'],
+            'tenant_location_id' => ['nullable', 'integer', 'exists:tenant_locations,id'],
+            'location_id' => ['nullable', 'integer', 'exists:tenant_locations,id'],
         ];
     }
 }
