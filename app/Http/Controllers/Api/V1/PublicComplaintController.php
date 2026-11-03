@@ -89,6 +89,17 @@ class PublicComplaintController extends Controller
 
         \App\Jobs\ProcessComplaintAiJob::dispatch($complaint);
 
+        try {
+            app(\App\Services\GupshupWhatsappService::class)->sendStageUpdateNotification(
+                $complaint,
+                'new',
+                null,
+                null
+            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed to dispatch initial WhatsApp complaint notification: ' . $e->getMessage());
+        }
+
         return $this->created($complaint, 'Complaint submitted successfully');
     }
 

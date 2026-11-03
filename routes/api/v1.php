@@ -12,7 +12,9 @@ use App\Http\Controllers\Api\V1\ChatMessageController;
 use App\Http\Controllers\Api\V1\CollectionController;
 use App\Http\Controllers\Api\V1\CommentController;
 use App\Http\Controllers\Api\V1\ComplaintController;
+use App\Http\Controllers\Api\V1\ComplaintWhatsappController;
 use App\Http\Controllers\Api\V1\DashboardController;
+use App\Http\Controllers\Api\V1\GupshupWebhookController;
 use App\Http\Controllers\Api\V1\KeywordController;
 use App\Http\Controllers\Api\V1\PlanController;
 use App\Http\Controllers\Api\V1\PlanRequestController;
@@ -87,6 +89,9 @@ Route::get('/public/complaints/track/{trackingNumber}', [PublicComplaintControll
 Route::prefix('webhooks')->middleware(['webhook.signature'])->group(function () {
     Route::post('/ingest-article', [WebhookController::class, 'ingestArticle']);
 });
+
+// Gupshup WhatsApp Inbound & Status Webhook (Token-authenticated per tenant)
+Route::match(['get', 'post'], '/webhooks/gupshup/{token}', [GupshupWebhookController::class, 'handle']);
 
 /*
 |--------------------------------------------------------------------------
@@ -268,6 +273,20 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/complaints/summary', [ComplaintController::class, 'summary']);
         Route::post('/complaints/summary/regenerate', [ComplaintController::class, 'regenerateSummary']);
         Route::get('/complaints/agents', [ComplaintController::class, 'agents']);
+
+        // Complaints Gupshup WhatsApp Integration & Unified Phone Chat
+        Route::prefix('complaints/whatsapp')->group(function () {
+            Route::get('/settings', [ComplaintWhatsappController::class, 'getSettings']);
+            Route::put('/settings', [ComplaintWhatsappController::class, 'updateSettings']);
+            Route::post('/settings/regenerate-token', [ComplaintWhatsappController::class, 'regenerateWebhookToken']);
+            Route::get('/templates', [ComplaintWhatsappController::class, 'getTemplates']);
+            Route::put('/templates', [ComplaintWhatsappController::class, 'updateTemplates']);
+            Route::post('/gupshup-templates', [ComplaintWhatsappController::class, 'createGupshupTemplate']);
+            Route::delete('/gupshup-templates/{templateId}', [ComplaintWhatsappController::class, 'deleteGupshupTemplate']);
+            Route::get('/conversation', [ComplaintWhatsappController::class, 'conversationByPhone']);
+            Route::post('/conversations/{conversationId}/messages', [ComplaintWhatsappController::class, 'sendMessage']);
+        });
+
         Route::get('/complaints/{id}', [ComplaintController::class, 'show']);
         Route::patch('/complaints/{id}/status', [ComplaintController::class, 'updateStatus']);
         Route::patch('/complaints/{id}/stage', [ComplaintController::class, 'updateStage']);

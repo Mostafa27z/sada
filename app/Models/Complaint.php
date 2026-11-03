@@ -17,6 +17,7 @@ class Complaint extends Model
         'name',
         'email',
         'phone',
+        'normalized_phone',
         'opinion',
         'rate',
         'priority',
@@ -35,6 +36,30 @@ class Complaint extends Model
         static::creating(function ($complaint) {
             if (empty($complaint->tracking_number)) {
                 $complaint->tracking_number = self::generateTrackingNumber();
+            }
+        });
+
+        static::saving(function ($complaint) {
+            try {
+                if (!\Illuminate\Support\Facades\Schema::hasColumn('complaints', 'normalized_phone')) {
+                    return;
+                }
+                if (!empty($complaint->phone)) {
+                    $defaultCc = '966';
+                    if ($complaint->tenant_id && \Illuminate\Support\Facades\Schema::hasTable('whatsapp_settings')) {
+                        $setting = WhatsappSetting::withoutGlobalScopes()
+                            ->where('tenant_id', $complaint->tenant_id)
+                            ->first(['default_country_code']);
+                        if ($setting?->default_country_code) {
+                            $defaultCc = $setting->default_country_code;
+                        }
+                    }
+                    $complaint->normalized_phone = \App\Support\PhoneNormalizer::toE164($complaint->phone, $defaultCc);
+                } else {
+                    $complaint->normalized_phone = null;
+                }
+            } catch (\Throwable) {
+                // Safe fallback if migration has not run yet
             }
         });
     }

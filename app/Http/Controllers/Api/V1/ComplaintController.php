@@ -475,6 +475,18 @@ class ComplaintController extends Controller
             ],
         ]);
 
+        // Dispatch automatic Gupshup WhatsApp stage notification if configured and enabled
+        try {
+            app(\App\Services\GupshupWhatsappService::class)->sendStageUpdateNotification(
+                $complaint,
+                $newStage,
+                $oldStage,
+                auth()->id()
+            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed to dispatch WhatsApp stage notification: ' . $e->getMessage());
+        }
+
         // Refresh AI recommendation
         $complaint->load(['assignedUser', 'activities.user']);
         $aiAnalysis = $aiService->analyzeSingleComplaint($complaint);
