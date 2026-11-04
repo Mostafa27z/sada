@@ -14,6 +14,8 @@ use App\Support\PhoneNormalizer;
 use App\Support\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class ComplaintWhatsappController extends Controller
 {
@@ -368,8 +370,79 @@ class ComplaintWhatsappController extends Controller
         ];
     }
 
+    /**
+     * Stream or redirect media attachment on-the-fly without storing any files on our server.
+     */
+    public function getMedia(int $messageId): mixed
+    {
+        $message = WhatsappMessage::withoutGlobalScopes()->find($messageId);
+        if (!$message || empty($message->media_url)) {
+            abort(404, 'الملف غير موجود');
+        }
+
+        // If it's already a full Gupshup/external URL, redirect directly
+        if (str_starts_with($message->media_url, 'http://') || str_starts_with($message->media_url, 'https://')) {
+            return redirect($message->media_url);
+        }
+
+        // Otherwise, it's a Meta media ID. Resolve via Gupshup / Meta API on-the-fly without saving to disk
+        $setting = WhatsappSetting::withoutGlobalScopes()
+            ->where('tenant_id', $message->tenant_id)
+            ->first();
+
+        $mediaId = $message->media_url;
+
+        // 1. Try Gupshup partner media endpoint if app_id / api_key is present
+        if ($setting && !empty($setting->app_id) && !empty($setting->api_key)) {
+            try {
+                $response = Http::withHeaders([
+                    'Authorization' => $setting->api_key,
+                ])->get("https://partner.gupshup.io/partner/app/{$setting->app_id}/media/{$mediaId}");
+
+                if ($response->successful()) {
+                    $contentType = $response->header('Content-Type') ?: 'application/octet-stream';
+                    return response($response->body(), 200, [
+                        'Content-Type' => $contentType,
+                        'Cache-Control' => 'public, max-age=86400',
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                Log::warning("Gupshup partner media fetch failed: " . $e->getMessage());
+            }
+        }
+
+        // 2. Try Meta Cloud API with token
+        if ($setting && !empty($setting->api_key)) {
+            try {
+                $metaResp = Http::withToken($setting->api_key)
+                    ->get("https://graph.facebook.com/v20.0/{$mediaId}");
+
+                if ($metaResp->successful() && !empty($metaResp->json('url'))) {
+                    $downloadUrl = $metaResp->json('url');
+                    $fileResp = Http::withToken($setting->api_key)->get($downloadUrl);
+                    if ($fileResp->successful()) {
+                        $contentType = $fileResp->header('Content-Type') ?: 'application/octet-stream';
+                        return response($fileResp->body(), 200, [
+                            'Content-Type' => $contentType,
+                            'Cache-Control' => 'public, max-age=86400',
+                        ]);
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning("Meta graph media fetch failed: " . $e->getMessage());
+            }
+        }
+
+        abort(404, 'تعذر تحميل الملف من مزود الخدمة');
+    }
+
     protected function formatMessage(WhatsappMessage $m): array
     {
+        $mediaUrl = $m->media_url;
+        if (!empty($mediaUrl) && !str_starts_with($mediaUrl, 'http://') && !str_starts_with($mediaUrl, 'https://')) {
+            $mediaUrl = url("/api/v1/whatsapp/media/{$m->id}");
+        }
+
         return [
             'id' => $m->id,
             'conversation_id' => $m->conversation_id,
@@ -382,7 +455,7 @@ class ComplaintWhatsappController extends Controller
             'direction' => $m->direction,
             'message_type' => $m->message_type,
             'body' => $m->body,
-            'media_url' => $m->media_url,
+            'media_url' => $mediaUrl,
             'status' => $m->status,
             'error_message' => $m->error_message,
             'gupshup_message_id' => $m->gupshup_message_id,

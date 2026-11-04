@@ -184,26 +184,35 @@ class GupshupWebhookController extends Controller
                 break;
             case 'image':
                 $bodyText = !empty($msg['image']['caption']) ? $msg['image']['caption'] : '📷 [صورة مرفقة]';
-                $mediaUrl = $msg['image']['id'] ?? null;
+                $mediaUrl = $msg['image']['url'] ?? ($msg['image']['link'] ?? ($msg['image']['id'] ?? null));
                 break;
             case 'video':
                 $bodyText = !empty($msg['video']['caption']) ? $msg['video']['caption'] : '🎥 [فيديو مرفق]';
-                $mediaUrl = $msg['video']['id'] ?? null;
+                $mediaUrl = $msg['video']['url'] ?? ($msg['video']['link'] ?? ($msg['video']['id'] ?? null));
                 break;
             case 'audio':
             case 'voice':
                 $bodyText = '🎤 [رسالة صوتية]';
-                $mediaUrl = $msg['audio']['id'] ?? ($msg['voice']['id'] ?? null);
+                $mediaUrl = $msg['audio']['url'] ?? ($msg['audio']['link'] ?? ($msg['audio']['id'] ?? ($msg['voice']['url'] ?? ($msg['voice']['id'] ?? null))));
                 break;
             case 'document':
                 $fileName = $msg['document']['filename'] ?? 'مستند';
                 $bodyText = !empty($msg['document']['caption']) ? $msg['document']['caption'] : "📄 [ملف: {$fileName}]";
-                $mediaUrl = $msg['document']['id'] ?? null;
+                $mediaUrl = $msg['document']['url'] ?? ($msg['document']['link'] ?? ($msg['document']['id'] ?? null));
+                break;
+            case 'sticker':
+                $bodyText = '🌟 [ملصق]';
+                $mediaUrl = $msg['sticker']['url'] ?? ($msg['sticker']['link'] ?? ($msg['sticker']['id'] ?? null));
                 break;
             case 'location':
                 $loc = $msg['location'] ?? [];
                 $locName = $loc['name'] ?? ($loc['address'] ?? 'موقع جغرافي');
                 $bodyText = "📍 [موقع جغرافي: {$locName}]";
+                $lat = $loc['latitude'] ?? null;
+                $lon = $loc['longitude'] ?? null;
+                if ($lat && $lon) {
+                    $mediaUrl = "https://www.google.com/maps?q={$lat},{$lon}";
+                }
                 break;
             case 'contacts':
                 $bodyText = '👤 [جهات اتصال مشتركة]';
@@ -299,15 +308,23 @@ class GupshupWebhookController extends Controller
             'text' => $msgContent['text'] ?? '',
             'button_reply' => $msgContent['title'] ?? ($msgContent['text'] ?? '[رد تفاعلي]'),
             'list_reply' => $msgContent['title'] ?? ($msgContent['text'] ?? '[اختيار من القائمة]'),
-            'image' => $msgContent['caption'] ?? '📷 [صورة مرفقة]',
-            'video' => $msgContent['caption'] ?? '🎥 [فيديو مرفق]',
+            'image' => !empty($msgContent['caption']) ? $msgContent['caption'] : (!empty($msgContent['text']) ? $msgContent['text'] : '📷 [صورة مرفقة]'),
+            'video' => !empty($msgContent['caption']) ? $msgContent['caption'] : (!empty($msgContent['text']) ? $msgContent['text'] : '🎥 [فيديو مرفق]'),
             'audio', 'voice' => '🎤 [رسالة صوتية]',
-            'file', 'document' => $msgContent['caption'] ?? ('📄 [ملف: ' . ($msgContent['name'] ?? 'مستند') . ']'),
+            'file', 'document' => !empty($msgContent['caption']) ? $msgContent['caption'] : ('📄 [ملف: ' . ($msgContent['name'] ?? ($msgContent['filename'] ?? 'مستند')) . ']'),
+            'sticker' => '🌟 [ملصق]',
             'location' => '📍 [موقع جغرافي]',
             default => is_string($msgContent['text'] ?? null) ? $msgContent['text'] : '[رسالة واردة عبر واتساب]',
         };
 
-        $mediaUrl = $msgContent['url'] ?? null;
+        $mediaUrl = $msgContent['url']
+            ?? ($msgContent['fileUrl']
+            ?? ($msgContent['mediaUrl']
+            ?? ($innerPayload['url'] ?? null)));
+
+        if ($msgType === 'location' && !empty($msgContent['latitude']) && !empty($msgContent['longitude'])) {
+            $mediaUrl = "https://www.google.com/maps?q={$msgContent['latitude']},{$msgContent['longitude']}";
+        }
 
         $this->saveInboundMessage(
             setting: $setting,

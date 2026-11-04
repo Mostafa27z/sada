@@ -93,6 +93,9 @@ Route::prefix('webhooks')->middleware(['webhook.signature'])->group(function () 
 // Gupshup WhatsApp Inbound & Status Webhook (Token-authenticated per tenant)
 Route::match(['get', 'post'], '/webhooks/gupshup/{token}', [GupshupWebhookController::class, 'handle']);
 
+// WhatsApp Media Proxy (Streams/redirects media on-the-fly from Gupshup/Meta without server storage)
+Route::get('/whatsapp/media/{messageId}', [ComplaintWhatsappController::class, 'getMedia']);
+
 /*
 |--------------------------------------------------------------------------
 | Authenticated User Routes (Global Context)
