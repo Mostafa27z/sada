@@ -5,12 +5,16 @@ namespace App\Jobs;
 use App\Models\Complaint;
 use App\Models\Tenant;
 use App\Services\ComplaintAiService;
+use App\Support\TenantContext;
+use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
 
 class ProcessComplaintAiJob implements ShouldQueue
 {
-    use Queueable;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
      * Create a new job instance.
@@ -24,17 +28,20 @@ class ProcessComplaintAiJob implements ShouldQueue
      */
     public function handle(ComplaintAiService $aiService): void
     {
-        // 1. Analyze single complaint
-        $analysis = $aiService->analyzeSingleComplaint($this->complaint);
-        $this->complaint->update([
-            'priority' => $analysis['priority'],
-            'ai_recommendation' => $analysis['ai_recommendation'],
-        ]);
-
-        // 2. Incrementally update tenant AI summary
         $tenant = Tenant::find($this->complaint->tenant_id);
-        if ($tenant) {
-            $aiService->updateTenantSummary($tenant, $this->complaint);
-        }
+
+        TenantContext::withoutTenancy(function () use ($aiService, $tenant) {
+            // 1. Analyze single complaint
+            $analysis = $aiService->analyzeSingleComplaint($this->complaint);
+            $this->complaint->update([
+                'priority' => $analysis['priority'],
+                'ai_recommendation' => $analysis['ai_recommendation'],
+            ]);
+
+            // 2. Incrementally update tenant AI summary
+            if ($tenant) {
+                $aiService->updateTenantSummary($tenant, $this->complaint);
+            }
+        });
     }
 }
