@@ -80,12 +80,40 @@ class ScrapePostCommentsJob implements ShouldQueue
             return;
         }
 
-        // 1. Update Post-Level Metadata (Engagement, Reach, Likes) on the Article
-        if ($this->articleId && !empty($result['post_metadata'])) {
+        // 1. Update Post-Level Metadata (Engagement, Reach, Likes, Post Text, Analytics) on the Article
+        if ($this->articleId) {
             $article = Article::withoutGlobalScopes()->find($this->articleId);
             if ($article) {
                 $raw = $article->raw_data ?? [];
-                $article->raw_data = array_merge($raw, $result['post_metadata']);
+                if (!empty($result['post_metadata'])) {
+                    $raw = array_merge($raw, $result['post_metadata']);
+                }
+                if (!empty($result['analytics'])) {
+                    $raw['analytics'] = $result['analytics'];
+                }
+                $postText = $result['post_metadata']['post_text'] ?? null;
+                if (!empty($postText) && (empty($article->content) || $article->content === $article->title || str_starts_with((string) $article->content, 'http'))) {
+                    $article->content = $postText;
+                    $article->summary = mb_substr($postText, 0, 300);
+                }
+                if (!empty($result['post_metadata']['author_name']) && empty($article->author)) {
+                    $article->author = $result['post_metadata']['author_name'];
+                }
+                // Update article sentiment to reflect either the post text stance or the dominant comment sentiment
+                $dist = $result['analytics']['sentiment_distribution'] ?? [];
+                if (!empty($dist)) {
+                    $posPct = (int) ($dist['positive'] ?? 0);
+                    $negPct = (int) ($dist['negative'] ?? 0);
+                    $neuPct = (int) ($dist['neutral'] ?? 0);
+                    if ($negPct > $posPct && $negPct >= $neuPct) {
+                        $article->sentiment = 'negative';
+                    } elseif ($posPct > $negPct && $posPct >= $neuPct) {
+                        $article->sentiment = 'positive';
+                    } else {
+                        $article->sentiment = 'neutral';
+                    }
+                }
+                $article->raw_data = $raw;
                 $article->save();
             }
         }
@@ -106,9 +134,11 @@ class ScrapePostCommentsJob implements ShouldQueue
                 if (is_array($commentItem)) {
                     $author = trim($commentItem['author'] ?? 'مستخدم');
                     $text = trim($commentItem['text'] ?? '');
-                    $sentiment = $commentItem['sentiment'] ?? 'positive';
+                    $sentiment = $commentItem['sentiment'] ?? 'neutral';
                     $sentimentScore = $commentItem['sentiment_score'] ?? null;
-                    $sentimentReason = $commentItem['sentiment_reason'] ?? ($commentItem['reason'] ?? null);
+                    $sentimentReason = $commentItem['sentiment_reason'] ?? ($commentItem['reason'] ?? ($commentItem['raw_data']['sentiment_reason'] ?? null));
+                    $outOfScope = (bool) ($commentItem['out_of_scope'] ?? ($commentItem['raw_data']['out_of_scope'] ?? false));
+                    $itemRawData = is_array($commentItem['raw_data'] ?? null) ? $commentItem['raw_data'] : [];
                     $rawDate = !empty($commentItem['comment_created_at'])
                         ? $commentItem['comment_created_at']
                         : (!empty($commentItem['created_at']) ? $commentItem['created_at'] : null);
@@ -130,12 +160,12 @@ class ScrapePostCommentsJob implements ShouldQueue
                     $parts = explode(":\n\n", $commentStr, 2);
                     $author = trim(ltrim($parts[0] ?? 'مستخدم', '@'));
                     $text = trim($parts[1] ?? $commentStr);
-                    $sentiment = 'positive';
-                    if (str_contains($text, 'ملاحظات') || str_contains($text, 'توضيح') || str_contains($text, 'مشكلة') || str_contains($text, 'تحسين')) {
-                        $sentiment = 'neutral';
-                    }
-                    $sentimentScore = null;
-                    $sentimentReason = null;
+                    $heur = $aiService->classifyArabicSentiment($text, $rubric);
+                    $sentiment = $heur['sentiment'] ?? 'neutral';
+                    $sentimentScore = $heur['score'] ?? null;
+                    $sentimentReason = $heur['reason'] ?? null;
+                    $outOfScope = false;
+                    $itemRawData = [];
                     $createdAt = now();
                     $externalId = null;
                     $parentExternalId = null;
@@ -153,6 +183,8 @@ class ScrapePostCommentsJob implements ShouldQueue
                     'sentiment' => $sentiment,
                     'sentiment_score' => $sentimentScore,
                     'sentiment_reason' => $sentimentReason,
+                    'out_of_scope' => $outOfScope,
+                    'raw_data' => $itemRawData,
                     'external_id' => $externalId,
                     'parent_external_id' => $parentExternalId,
                     'likes_count' => $likesCount,
@@ -196,13 +228,14 @@ class ScrapePostCommentsJob implements ShouldQueue
                     'sentiment_score' => $c['sentiment_score'],
                     'likes_count' => $c['likes_count'],
                     'comment_created_at' => $c['comment_created_at'],
-                    'raw_data' => [
+                    'raw_data' => array_merge($c['raw_data'] ?? [], [
                         'author' => $c['author'],
                         'text' => $c['text'],
                         'sentiment' => $c['sentiment'],
                         'sentiment_reason' => $c['sentiment_reason'] ?? null,
+                        'out_of_scope' => $c['out_of_scope'] ?? false,
                         'analytics' => $result['analytics'] ?? [],
-                    ],
+                    ]),
                     'created_at' => $c['comment_created_at'],
                 ]
             );
@@ -276,6 +309,7 @@ class ScrapePostCommentsJob implements ShouldQueue
                         'text' => $c['text'],
                         'sentiment' => $c['sentiment'],
                         'sentiment_reason' => $c['sentiment_reason'] ?? null,
+                        'out_of_scope' => $c['out_of_scope'] ?? false,
                     ]),
                     'created_at' => $c['comment_created_at'],
                 ]

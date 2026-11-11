@@ -143,7 +143,8 @@ class ArticleController extends Controller
 
         $rubric = $request->input('sentiment_rubric');
         if (empty($rubric)) {
-            $rubric = \App\Support\TenantContext::getTenant()?->getSentimentRubric();
+            $firstCol = $article->collections()->first();
+            $rubric = $firstCol ? $firstCol->getEffectiveRubric() : \App\Support\TenantContext::getTenant()?->getSentimentRubric();
         }
 
         // 1. Re-analyze article itself
@@ -161,6 +162,7 @@ class ArticleController extends Controller
             $article->sentiment_score = $res['sentiment_score'];
             $raw = $article->raw_data ?? [];
             $raw['sentiment_reason'] = $res['reason'] ?? null;
+            $raw['out_of_scope'] = ($res['is_relevant'] ?? true) === false;
             if (!empty($rubric)) {
                 $raw['sentiment_rubric_used'] = $rubric;
             }
@@ -178,23 +180,47 @@ class ArticleController extends Controller
                 ];
             }
 
-            $classifiedComments = $geminiService->classifyPostsSentiment($commentsToClassify, $rubric);
+            $classifiedComments = $geminiService->classifyPostsSentiment(
+                $commentsToClassify,
+                $rubric,
+                null,
+                $articleText !== '' ? $articleText : null
+            );
+            $sentimentCounts = ['positive' => 0, 'neutral' => 0, 'negative' => 0];
+            $inScopeTotal = 0;
+
             foreach ($article->comments as $comment) {
                 if (isset($classifiedComments[(string) $comment->id])) {
                     $cRes = $classifiedComments[(string) $comment->id];
                     $cRaw = $comment->raw_data ?? [];
                     $cRaw['sentiment_reason'] = $cRes['reason'] ?? null;
+                    $cOutOfScope = ($cRes['is_relevant'] ?? true) === false;
+                    $cRaw['out_of_scope'] = $cOutOfScope;
                     if (!empty($rubric)) {
                         $cRaw['sentiment_rubric_used'] = $rubric;
                     }
 
+                    $cSent = $cRes['sentiment'] ?? 'neutral';
                     $comment->update([
-                        'sentiment' => $cRes['sentiment'],
+                        'sentiment' => $cSent,
                         'sentiment_score' => $cRes['sentiment_score'],
                         'raw_data' => $cRaw,
                     ]);
+
+                    if (!$cOutOfScope) {
+                        $sentimentCounts[$cSent] = ($sentimentCounts[$cSent] ?? 0) + 1;
+                        $inScopeTotal++;
+                    }
                 }
             }
+
+            $artRaw = $article->raw_data ?? [];
+            $artRaw['analytics'] = array_merge($artRaw['analytics'] ?? [], [
+                'total_comments' => $inScopeTotal,
+                'sentiment_counts' => $sentimentCounts,
+            ]);
+            $article->raw_data = $artRaw;
+            $article->save();
         }
 
         return $this->success(

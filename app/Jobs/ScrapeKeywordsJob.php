@@ -207,8 +207,25 @@ class ScrapeKeywordsJob implements ShouldQueue
                     $article->restore();
                 }
 
+                $postSentiment = is_array($post) ? ($post['sentiment'] ?? null) : null;
+                $sentiment = in_array($postSentiment, ['positive', 'negative', 'neutral']) ? $postSentiment : 'neutral';
+                $sentimentScore = (is_array($post) && isset($post['sentiment_score'])) ? floatval($post['sentiment_score']) : 0.75;
+
                 if ($isExistingArticle) {
-                    // Post was previously fetched for this tenant: preserve existing record and link without re-processing
+                    // Post was previously fetched for this tenant: update its sentiment & reason in case rubric changed, and link
+                    $existingRaw = is_array($article->raw_data) ? $article->raw_data : [];
+                    if (is_array($post) && !empty($post['sentiment_reason'])) {
+                        $existingRaw['sentiment_reason'] = $post['sentiment_reason'];
+                    }
+                    if (!empty($result['analytics'])) {
+                        $existingRaw['analytics'] = $result['analytics'];
+                    }
+                    $article->update([
+                        'sentiment' => $sentiment,
+                        'sentiment_score' => $sentimentScore,
+                        'raw_data' => $existingRaw,
+                    ]);
+
                     $syncedArticleIds[] = $article->id;
                     $savedForPlatform++;
                     if (is_array($post) && !empty($post['keyword'])) {
@@ -227,10 +244,6 @@ class ScrapeKeywordsJob implements ShouldQueue
                     }
                     continue;
                 }
-
-                $postSentiment = is_array($post) ? ($post['sentiment'] ?? null) : null;
-                $sentiment = in_array($postSentiment, ['positive', 'negative', 'neutral']) ? $postSentiment : 'neutral';
-                $sentimentScore = (is_array($post) && isset($post['sentiment_score'])) ? floatval($post['sentiment_score']) : 0.75;
 
                 $article->fill([
                     'title' => $title ?: 'خبر / منشور صحفي',

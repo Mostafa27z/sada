@@ -173,8 +173,9 @@ class AiScraperService
             }
         }
 
-        // Deduplicate within each platform
-        $dedup = function(array $items) {
+        // Deduplicate within each platform by URL/ID and by normalized text content (so identical syndicated/reposted news is counted only once)
+        $seenTextFingerprints = [];
+        $dedup = function(array $items) use (&$seenTextFingerprints) {
             $seen = [];
             $out = [];
             foreach ($items as $item) {
@@ -182,7 +183,16 @@ class AiScraperService
                 if ($key && isset($seen[$key])) {
                     continue;
                 }
+                $rawTxt = trim(($item['text'] ?? '') ?: ($item['title'] ?? ''));
+                // Normalize text for duplicate check: strip URLs, mentions, hashtags, punctuation, and whitespace
+                $normTxt = preg_replace('/https?:\/\/\S+/iu', '', $rawTxt);
+                $normTxt = \App\Support\KeywordRelevanceFilter::normalize((string) $normTxt);
+                $textFp = mb_strlen($normTxt) >= 20 ? md5(mb_substr($normTxt, 0, 180)) : null;
+                if ($textFp && isset($seenTextFingerprints[$textFp])) {
+                    continue;
+                }
                 if ($key) $seen[$key] = true;
+                if ($textFp) $seenTextFingerprints[$textFp] = true;
                 $out[] = $item;
             }
             return $out;
@@ -194,11 +204,18 @@ class AiScraperService
         $tiktokPosts = $dedup($tiktokPosts);
         $webPosts = $dedup($webPosts);
 
-        // Discard only empty or corrupted posts (< 4 chars)
-        $cleanValidPosts = function(array $posts) {
-            return array_values(array_filter($posts, function($p) {
+        // Discard empty, corrupted (< 4 chars), or out-of-scope posts (e.g. other regions/clusters unrelated to target scope)
+        $cleanValidPosts = function(array $posts) use ($rubric, $keywords) {
+            return array_values(array_filter($posts, function($p) use ($rubric, $keywords) {
                 $txt = trim(($p['text'] ?? '') . ' ' . ($p['title'] ?? ''));
-                return mb_strlen($txt) >= 4 && strtolower($txt) !== 'unknown';
+                if (mb_strlen($txt) < 4 || strtolower($txt) === 'unknown') {
+                    return false;
+                }
+                $author = (string) ($p['author'] ?? $p['username'] ?? '');
+                if ($this->isOutOfScopeForRubric($txt, $author, $rubric, $keywords)) {
+                    return false;
+                }
+                return true;
             }));
         };
 
@@ -224,13 +241,17 @@ class AiScraperService
             $enrichSentiment = function(&$postList) use ($sentimentMap, $rubric, $keywords) {
                 $filtered = [];
                 foreach ($postList as $post) {
-                    $key = $post['post_id'] ?? $post['external_id'] ?? null;
+                    $key = $post['id'] ?? $post['post_id'] ?? $post['external_id'] ?? null;
                     if ($key && isset($sentimentMap[(string)$key])) {
-                        // User requirement: if sentiment analysis failed or marked irrelevant, keep article as neutral, NEVER discard!
-                        $rawSent = strtolower((string)($sentimentMap[(string)$key]['sentiment'] ?? 'neutral'));
+                        $gemItem = $sentimentMap[(string)$key];
+                        // Exclude items explicitly flagged by Gemini as out-of-scope / irrelevant to the target entity/region
+                        if (array_key_exists('is_relevant', $gemItem) && $gemItem['is_relevant'] === false) {
+                            continue;
+                        }
+                        $rawSent = strtolower((string)($gemItem['sentiment'] ?? 'neutral'));
                         $post['sentiment'] = in_array($rawSent, ['positive', 'negative', 'neutral']) ? $rawSent : 'neutral';
-                        $post['sentiment_score'] = floatval($sentimentMap[(string)$key]['sentiment_score'] ?? 0.8);
-                        $post['sentiment_reason'] = $sentimentMap[(string)$key]['reason'] ?? 'محايد';
+                        $post['sentiment_score'] = floatval($gemItem['sentiment_score'] ?? 0.8);
+                        $post['sentiment_reason'] = $gemItem['reason'] ?? 'محايد';
                     } else {
                         $fbData = $this->classifyArabicSentiment(($post['text'] ?? '') . ' ' . ($post['title'] ?? ''), $rubric, $keywords);
                         $post['sentiment'] = $fbData['sentiment'] ?? 'neutral';
@@ -1196,54 +1217,8 @@ class AiScraperService
     /**
      * Scrape post comments and sentiment analytics by URLs natively.
      */
-    public function scrapePostComments(array $urlsByPlatform, mixed $limit = 50): array
+    public function scrapePostComments(array $urlsByPlatform, mixed $limit = 50, ?array $rubric = null): array
     {
-        $instaUrls = $urlsByPlatform['insta_urls'] ?? $urlsByPlatform['instagram'] ?? [];
-        $fbUrls = $urlsByPlatform['facebook_urls'] ?? $urlsByPlatform['facebook'] ?? [];
-        $tiktokUrls = $urlsByPlatform['tiktok_urls'] ?? $urlsByPlatform['tiktok'] ?? [];
-        $twitterUrls = $urlsByPlatform['twitter_urls'] ?? $urlsByPlatform['twitter'] ?? $urlsByPlatform['x'] ?? [];
-
-        // 1. Try native ApifyScraperService + GeminiAnalyticsService if available
-        if ($this->apifyService && $this->geminiService) {
-            try {
-                $instaComments = !empty($instaUrls) ? $this->apifyService->fetchInstagramComments($instaUrls) : [];
-                $fbComments = !empty($fbUrls) ? $this->apifyService->fetchFacebookComments($fbUrls) : [];
-                $tiktokComments = !empty($tiktokUrls) ? $this->apifyService->fetchTiktokComments($tiktokUrls) : [];
-                $twitterComments = !empty($twitterUrls) ? $this->apifyService->fetchTwitterComments($twitterUrls) : [];
-
-                $allComments = array_merge($instaComments, $fbComments, $tiktokComments, $twitterComments);
-
-                if (!empty($allComments)) {
-                    $analyticsJson = $this->geminiService->analyzeSentiment($instaComments, $fbComments, $twitterComments, $tiktokComments);
-
-                    $postMetadata = [];
-                    if (!empty($twitterUrls)) {
-                        foreach ($twitterUrls as $tUrl) {
-                            $twMeta = $this->apifyService->fetchTwitterPostMetrics($tUrl);
-                            if ($twMeta) {
-                                $postMetadata = $twMeta;
-                                break;
-                            }
-                        }
-                    }
-
-                    return [
-                        'status' => 'success',
-                        'total_comments_count' => count($allComments),
-                        'comments_by_platform' => [
-                            'instagram_comments' => $instaComments,
-                            'facebook_comments' => $fbComments,
-                            'tiktok_comments' => $tiktokComments,
-                            'twitter_comments' => $twitterComments,
-                        ],
-                        'analytics' => $analyticsJson,
-                        'post_metadata' => $postMetadata,
-                    ];
-                }
-            } catch (\Exception $e) {
-                Log::error('Native AiScraperService exception on scrapePostComments: ' . $e->getMessage());
-            }
-        }
         // Normalize input: whether grouped array or flat list of strings, classify properly
         $normalized = [
             'insta_urls' => [],
@@ -1284,10 +1259,53 @@ class AiScraperService
             }
         }
 
-        // 2. Direct Real Scraper via Apify
+        // 2. Direct Real Scraper via Apify (preserves comment IDs, nested replies, dates, likes, and runs Gemini per-comment rubric classification)
         $apifyToken = config('services.apify.token') ?: env('APIFY_API_TOKEN') ?: env('APIFY_TOKEN') ?: env('APIFY_TOKEN_2') ?: '';
         if (!empty($apifyToken)) {
-            return $this->scrapeViaApify($normalized, $apifyToken, $limit);
+            return $this->scrapeViaApify($normalized, $apifyToken, $limit, $rubric);
+        }
+
+        // 3. Fallback to legacy ApifyScraperService if token is only available inside apifyService mock
+        if ($this->apifyService && $this->geminiService) {
+            try {
+                $effectiveLimit = $this->resolveCommentsLimit($limit);
+                $instaComments = !empty($normalized['insta_urls']) ? $this->apifyService->fetchInstagramComments($normalized['insta_urls'], $effectiveLimit) : [];
+                $fbComments = !empty($normalized['facebook_urls']) ? $this->apifyService->fetchFacebookComments($normalized['facebook_urls'], $effectiveLimit) : [];
+                $tiktokComments = !empty($normalized['tiktok_urls']) ? $this->apifyService->fetchTiktokComments($normalized['tiktok_urls'], $effectiveLimit) : [];
+                $twitterComments = !empty($normalized['twitter_urls']) ? $this->apifyService->fetchTwitterComments($normalized['twitter_urls'], $effectiveLimit) : [];
+
+                $allComments = array_merge($instaComments, $fbComments, $tiktokComments, $twitterComments);
+
+                if (!empty($allComments)) {
+                    $analyticsJson = $this->geminiService->analyzeSentiment($instaComments, $fbComments, $twitterComments, $tiktokComments, $rubric);
+
+                    $postMetadata = [];
+                    if (!empty($normalized['twitter_urls'])) {
+                        foreach ($normalized['twitter_urls'] as $tUrl) {
+                            $twMeta = $this->apifyService->fetchTwitterPostMetrics($tUrl);
+                            if ($twMeta) {
+                                $postMetadata = $twMeta;
+                                break;
+                            }
+                        }
+                    }
+
+                    return [
+                        'status' => 'success',
+                        'total_comments_count' => count($allComments),
+                        'comments_by_platform' => [
+                            'instagram_comments' => $instaComments,
+                            'facebook_comments' => $fbComments,
+                            'tiktok_comments' => $tiktokComments,
+                            'twitter_comments' => $twitterComments,
+                        ],
+                        'analytics' => $analyticsJson,
+                        'post_metadata' => $postMetadata,
+                    ];
+                }
+            } catch (\Exception $e) {
+                Log::error('Native AiScraperService exception on scrapePostComments: ' . $e->getMessage());
+            }
         }
 
         return [
@@ -1301,6 +1319,108 @@ class AiScraperService
             ],
             'post_metadata' => [],
         ];
+    }
+
+    /**
+     * Resolve effective comments scraping limit.
+     * Supports 'all'/'الكل' and ensures standard post monitoring fetches up to 250 comments by default so replies are not truncated at 50.
+     */
+    protected function resolveCommentsLimit(mixed $limit = 50): int
+    {
+        if (is_string($limit)) {
+            $clean = strtolower(trim($limit));
+            if (in_array($clean, ['all', 'الكل', 'unlimited', 'max', ''], true)) {
+                return 500;
+            }
+        }
+        $num = (int) $limit;
+        if ($num <= 0) {
+            return 500;
+        }
+        // Trial accounts pass 25; standard campaigns default to 50 in UI, so raise 50 to 250 to capture all post comments
+        if ($num === 50) {
+            return 250;
+        }
+        return min(max($num, 10), 1000);
+    }
+
+    /**
+     * Check if a post or comment is out of scope based on geographic/entity boundaries in the rubric or keywords.
+     */
+    public function isOutOfScopeForRubric(string $text, string $author = '', ?array $rubric = null, ?array $keywords = null): bool
+    {
+        $combinedScope = mb_strtolower(trim(
+            ($rubric['topic_context'] ?? '') . ' ' .
+            ($rubric['neutral_rules'] ?? '') . ' ' .
+            implode(' ', $keywords ?? [])
+        ));
+
+        if (empty($combinedScope)) {
+            return false;
+        }
+
+        $normText = \App\Support\KeywordRelevanceFilter::normalize($text . ' ' . $author);
+        $normScope = \App\Support\KeywordRelevanceFilter::normalize($combinedScope);
+
+        // Commercial spam / unrelated ads check
+        $commercialSpamTerms = [
+            'شقق تمليك', 'فلل للبيع', 'اراضي للبيع', 'كود خصم', 'توصيل مجاني', 'تسديد قروض', 'سداد قروض', 'استقدام خادمات'
+        ];
+        foreach ($commercialSpamTerms as $spam) {
+            if (str_contains($normText, \App\Support\KeywordRelevanceFilter::normalize($spam))) {
+                return true;
+            }
+        }
+
+        // Geographic / Regional Health Cluster scope enforcement:
+        // If monitoring a specific Saudi region (e.g., Tabuk / تجمع تبوك الصحي), exclude posts about OTHER regional health clusters
+        $saudiRegions = [
+            'تبوك' => ['تبوك', 'الرابيه', 'ضباء', 'الوجه', 'املج', 'تيماء', 'حقل', 'البدع', 'clustertabuk', 'tabuk'],
+            'عسير' => ['تجمع عسير', 'صحه عسير', 'منطقه عسير', 'مستشفي عسير', 'بيشه', 'خميس مشيط', 'ابها'],
+            'نجران' => ['تجمع نجران', 'صحه نجران', 'منطقه نجران', 'مستشفي نجران', 'شروره'],
+            'الشرقيه' => ['تجمع الشرقيه', 'صحه الشرقيه', 'المنطقه الشرقيه', 'تجمع الاحساء', 'تجمع حفر الباطن'],
+            'المدينه' => ['تجمع المدينه', 'صحه المدينه', 'المدينه المنوره'],
+            'الحدود الشماليه' => ['تجمع الحدود الشماليه', 'صحه الحدود الشماليه', 'عرعر', 'رفحاء', 'طريف'],
+            'الرياض' => ['تجمع الرياض', 'صحه الرياض'],
+            'جده' => ['تجمع جده', 'صحه جده'],
+            'مكه' => ['تجمع مكه', 'صحه مكه', 'تجمع الطائف'],
+            'القصيم' => ['تجمع القصيم', 'صحه القصيم', 'بريده', 'عنيزه'],
+            'جازان' => ['تجمع جازان', 'صحه جازان', 'جيزان'],
+            'حائل' => ['تجمع حائل', 'صحه حائل'],
+            'الجوف' => ['تجمع الجوف', 'صحه الجوف', 'سكاكا', 'القريات'],
+            'الباحه' => ['تجمع الباحه', 'صحه الباحه'],
+        ];
+
+        // Determine if target scope specifically targets Tabuk
+        $targetsTabuk = str_contains($normScope, 'تبوك');
+        if ($targetsTabuk) {
+            $mentionsTabuk = false;
+            foreach ($saudiRegions['تبوك'] as $tabukAnchor) {
+                if (str_contains($normText, $tabukAnchor)) {
+                    $mentionsTabuk = true;
+                    break;
+                }
+            }
+
+            if (!$mentionsTabuk) {
+                // If it explicitly mentions another region's cluster/health directorate without mentioning Tabuk, it is strictly out of scope
+                foreach ($saudiRegions as $regKey => $anchors) {
+                    if ($regKey === 'تبوك') continue;
+                    foreach ($anchors as $anchor) {
+                        if (str_contains($normText, $anchor)) {
+                            return true;
+                        }
+                    }
+                }
+
+                // If the rubric explicitly states that content not mentioning Tabuk is out of scope
+                if (str_contains($normScope, 'خارج النطاق') || str_contains($normScope, 'منطقه تبوك فقط') || str_contains($normScope, 'لا يذكر تبوك')) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1344,20 +1464,19 @@ class AiScraperService
     /**
      * Scrape real comments using Apify platform actors.
      */
-    protected function scrapeViaApify(array $normalized, string $token, mixed $limit = 50): array
+    protected function scrapeViaApify(array $normalized, string $token, mixed $limit = 50, ?array $rubric = null): array
     {
-        $effectiveLimit = 50;
-        if (is_numeric($limit) && (int) $limit > 0) {
-            $effectiveLimit = (int) $limit;
-        } elseif ($limit === 'all' || $limit === 'الكل') {
-            $effectiveLimit = 500;
-        }
+        $effectiveLimit = $this->resolveCommentsLimit($limit);
+        // Scale actor run timeout with the amount of comments requested (run-sync hard cap is ~300s)
+        $actorTimeout = (int) min(285, max(90, 40 + (int) ceil($effectiveLimit * 0.35)));
 
         $commentsByPlatform = [];
         $allComments = [];
         $sentimentCounts = ['positive' => 0, 'neutral' => 0, 'negative' => 0];
         $postMetadata = [];
         $detectedPrivacyError = null;
+        $postContext = null;
+        $excludedOutOfScope = 0;
 
         // 1. Facebook Scraping
         if (!empty($normalized['facebook_urls'])) {
@@ -1369,7 +1488,7 @@ class AiScraperService
                     'resultsLimit' => $effectiveLimit,
                     'includeNestedComments' => true,
                     'viewOption' => 'RANKED_UNFILTERED',
-                ], $token, 90);
+                ], $token, $actorTimeout);
 
                 foreach ($items as $idx => $item) {
                     if (!empty($item['error'])) {
@@ -1386,7 +1505,7 @@ class AiScraperService
                     if (empty($text)) continue;
 
                     $author = $item['author']['name'] ?? $item['profileName'] ?? 'مستخدم فيسبوك';
-                    $sentimentData = $this->classifyArabicSentiment($text);
+                    $sentimentData = $this->classifyArabicSentiment($text, $rubric);
                     $sentimentCounts[$sentimentData['sentiment']]++;
 
                     $parsedDate = !empty($item['date']) ? $this->parseSocialTimestamp($item['date']) : null;
@@ -1432,7 +1551,7 @@ class AiScraperService
                             if (empty($rText)) continue;
 
                             $rAuthor = $rItem['author']['name'] ?? $rItem['profileName'] ?? 'متابع فيسبوك';
-                            $rSentiment = $this->classifyArabicSentiment($rText);
+                            $rSentiment = $this->classifyArabicSentiment($rText, $rubric);
                             $sentimentCounts[$rSentiment['sentiment']]++;
 
                             $parsedRDate = !empty($rItem['date']) ? $this->parseSocialTimestamp($rItem['date']) : null;
@@ -1526,7 +1645,7 @@ class AiScraperService
                     'directUrls' => [$igUrl],
                     'resultsLimit' => $effectiveLimit,
                     'includeNestedComments' => true,
-                ], $token, 90);
+                ], $token, $actorTimeout);
 
                 foreach ($items as $idx => $item) {
                     if (!empty($item['error'])) {
@@ -1537,7 +1656,7 @@ class AiScraperService
                     if (empty($text)) continue;
 
                     $author = $item['ownerUsername'] ?? 'مستخدم إنستغرام';
-                    $sentimentData = $this->classifyArabicSentiment($text);
+                    $sentimentData = $this->classifyArabicSentiment($text, $rubric);
                     $sentimentCounts[$sentimentData['sentiment']]++;
 
                     $parsedDate = !empty($item['timestamp']) ? $this->parseSocialTimestamp($item['timestamp']) : null;
@@ -1578,7 +1697,7 @@ class AiScraperService
                             if (empty($rText)) continue;
 
                             $rAuthor = $rItem['ownerUsername'] ?? 'متابع إنستغرام';
-                            $rSentiment = $this->classifyArabicSentiment($rText);
+                            $rSentiment = $this->classifyArabicSentiment($rText, $rubric);
                             $sentimentCounts[$rSentiment['sentiment']]++;
 
                             $parsedRDate = !empty($rItem['timestamp']) ? $this->parseSocialTimestamp($rItem['timestamp']) : null;
@@ -1664,6 +1783,9 @@ class AiScraperService
                     $twMeta = $this->apifyService->fetchTwitterPostMetrics($cleanTwUrl);
                     if ($twMeta) {
                         $postMetadata = $twMeta;
+                        if ($postContext === null && !empty($twMeta['post_text'])) {
+                            $postContext = (string) $twMeta['post_text'];
+                        }
                     }
                 } elseif (!empty($rootTweetId) && preg_match('/(?:twitter|x)\.com\/([^\/]+)\/status/i', $cleanTwUrl, $m)) {
                     $uHandle = $m[1];
@@ -1674,6 +1796,9 @@ class AiScraperService
                             ->get("https://api.fxtwitter.com/{$uHandle}/status/{$rootTweetId}");
                         if ($fxRes->successful()) {
                             $twData = $fxRes->json()['tweet'] ?? [];
+                            if ($postContext === null && !empty($twData['text'])) {
+                                $postContext = trim((string) $twData['text']);
+                            }
                             $likes = (int) ($twData['likes'] ?? 0);
                             $views = (int) ($twData['views'] ?? 0);
                             $retweets = (int) ($twData['retweets'] ?? 0);
@@ -1693,6 +1818,7 @@ class AiScraperService
                                 'replies' => $replies,
                                 'engagement' => $likes > 0 ? (string) $likes : null,
                                 'reach' => $reach,
+                                'post_text' => $postContext,
                             ];
                         }
                     } catch (\Exception $e) {}
@@ -1708,15 +1834,19 @@ class AiScraperService
                     'maxDepth' => 5,
                     'maxItems' => $effectiveLimit,
                     'outputPreset' => 'flat',
-                ], $token, 50);
+                ], $token, $actorTimeout);
 
-                // 2. Secondary fallback actor (fastcrawler requires conversationIds)
-                if (empty($items) && !empty($rootTweetId)) {
-                    $items = $this->runApifyActor('fastcrawler~twitter-reply-scraper-0-1-1k-tweets-pay-per-result-2026', [
+                // 2. Secondary fallback actor (fastcrawler requires conversationIds).
+                // Also used to top-up when the primary actor returned fewer replies than requested.
+                if (!empty($rootTweetId) && count($items) < $effectiveLimit) {
+                    $moreItems = $this->runApifyActor('fastcrawler~twitter-reply-scraper-0-1-1k-tweets-pay-per-result-2026', [
                         'conversationIds' => [$rootTweetId],
                         'queryType' => 'Latest',
                         'maxItems' => $effectiveLimit,
-                    ], $token, 45);
+                    ], $token, $actorTimeout);
+                    if (!empty($moreItems)) {
+                        $items = array_merge($items, $moreItems);
+                    }
                 }
 
                 // 3. Tertiary fallback actor if still empty (qhybbvlFivx7AP0Oh post replies scraper)
@@ -1725,8 +1855,33 @@ class AiScraperService
                         'postUrls' => [$cleanTwUrl],
                         'resultsLimit' => $effectiveLimit,
                         'includeOriginalPost' => false,
-                    ], $token, 45);
+                    ], $token, $actorTimeout);
                 }
+
+                // Detect the original post (used as context) and drop it + unrelated/duplicate tweets from the replies list
+                $seenTweetIds = [];
+                $filteredItems = [];
+                foreach ($items as $rawItem) {
+                    if (!is_array($rawItem)) continue;
+                    $itemId = (string) ($rawItem['id'] ?? '');
+                    $itemText = trim($rawItem['text'] ?? $rawItem['full_text'] ?? $rawItem['tweet_text'] ?? $rawItem['raw_text']['text'] ?? '');
+                    if ($rootTweetId !== '' && $itemId === $rootTweetId) {
+                        if ($postContext === null && $itemText !== '') {
+                            $postContext = $itemText;
+                        }
+                        continue;
+                    }
+                    $convId = (string) ($rawItem['conversationId'] ?? $rawItem['conversation_id'] ?? '');
+                    if ($rootTweetId !== '' && $convId !== '' && $convId !== $rootTweetId) {
+                        continue;
+                    }
+                    if ($itemId !== '') {
+                        if (isset($seenTweetIds[$itemId])) continue;
+                        $seenTweetIds[$itemId] = true;
+                    }
+                    $filteredItems[] = $rawItem;
+                }
+                $items = array_slice($filteredItems, 0, max($effectiveLimit, 1));
 
                 foreach ($items as $idx => $item) {
                     $text = trim($item['text'] ?? $item['full_text'] ?? $item['tweet_text'] ?? $item['raw_text']['text'] ?? '');
@@ -1748,7 +1903,7 @@ class AiScraperService
                         ?? $item['username']
                         ?? 'مستخدم منصة X';
 
-                    $sentimentData = $this->classifyArabicSentiment($cleanText);
+                    $sentimentData = $this->classifyArabicSentiment($cleanText, $rubric);
 
                     $createdAtStr = !empty($item['createdAt']) ? date('Y-m-d H:i:s', strtotime($item['createdAt'])) : date('Y-m-d H:i:s');
                     $externalId = (string) ($item['id'] ?? ('tw_c_' . $idx));
@@ -1761,6 +1916,7 @@ class AiScraperService
                         'text' => $cleanText,
                         'sentiment' => $sentimentData['sentiment'],
                         'sentiment_score' => $sentimentData['score'],
+                        'sentiment_reason' => $sentimentData['reason'] ?? null,
                         'external_id' => $externalId,
                         'parent_external_id' => $parentExternalId,
                         'likes_count' => (int) ($item['likeCount'] ?? 0),
@@ -1770,6 +1926,7 @@ class AiScraperService
                             'author' => $author,
                             'text' => $cleanText,
                             'sentiment' => $sentimentData['sentiment'],
+                            'sentiment_reason' => $sentimentData['reason'] ?? null,
                             'tweet_id' => $externalId,
                             'in_reply_to' => $parentReplyId,
                         ],
@@ -1793,7 +1950,7 @@ class AiScraperService
                     'postURLs' => [$ttUrl],
                     'commentsPerPost' => $effectiveLimit,
                     'maxRepliesPerComment' => 20,
-                ], $token, 90);
+                ], $token, $actorTimeout);
 
                 foreach ($items as $idx => $item) {
                     if (!empty($item['error'])) {
@@ -1804,7 +1961,7 @@ class AiScraperService
                     if (empty($text)) continue;
 
                     $author = $item['uniqueId'] ?? $item['user']['uniqueId'] ?? $item['nickname'] ?? 'مستخدم تيك توك';
-                    $sentimentData = $this->classifyArabicSentiment($text);
+                    $sentimentData = $this->classifyArabicSentiment($text, $rubric);
 
                     $createdAtStr = !empty($item['createTime']) ? (is_numeric($item['createTime']) ? date('Y-m-d H:i:s', (int)$item['createTime']) : date('Y-m-d H:i:s', strtotime($item['createTime']))) : date('Y-m-d H:i:s');
                     $externalId = (string) ($item['cid'] ?? $item['id'] ?? ('tt_c_' . $idx));
@@ -1825,6 +1982,7 @@ class AiScraperService
                         'text' => $text,
                         'sentiment' => $sentimentData['sentiment'],
                         'sentiment_score' => $sentimentData['score'],
+                        'sentiment_reason' => $sentimentData['reason'] ?? null,
                         'external_id' => $externalId,
                         'parent_external_id' => $parentExternalId,
                         'likes_count' => (int) ($item['diggCount'] ?? 0),
@@ -1834,6 +1992,7 @@ class AiScraperService
                             'author' => $author,
                             'text' => $text,
                             'sentiment' => $sentimentData['sentiment'],
+                            'sentiment_reason' => $sentimentData['reason'] ?? null,
                             'cid' => $externalId,
                             'reply_id' => $parentExternalId,
                             'replies_to_id' => $parentExternalId,
@@ -1911,16 +2070,70 @@ class AiScraperService
             ];
         }
 
+        // 5. Batch AI Stance & Sentiment Classification via Gemini (using Tenant/Campaign Rubric + Parent Post Context)
+        if ($this->geminiService && $this->geminiService->hasApiKey() && !empty($allComments)) {
+            try {
+                $geminiMap = $this->geminiService->classifyPostsSentiment($allComments, $rubric, null, $postContext);
+                if (!empty($geminiMap)) {
+                    $sentimentCounts = ['positive' => 0, 'neutral' => 0, 'negative' => 0];
+                    $inScopeTotal = 0;
+
+                    foreach ($commentsByPlatform as $platKey => &$platComments) {
+                        foreach ($platComments as &$c) {
+                            $extId = (string) ($c['external_id'] ?? '');
+                            if ($extId !== '' && isset($geminiMap[$extId])) {
+                                $gem = $geminiMap[$extId];
+                                $sent = strtolower((string) ($gem['sentiment'] ?? 'neutral'));
+                                if (!in_array($sent, ['positive', 'negative', 'neutral'], true)) {
+                                    $sent = 'neutral';
+                                }
+                                $isRel = $gem['is_relevant'] ?? true;
+                                $c['sentiment'] = $sent;
+                                $c['sentiment_score'] = (float) ($gem['sentiment_score'] ?? 0.85);
+                                $c['sentiment_reason'] = $gem['reason'] ?? null;
+                                $c['out_of_scope'] = ($isRel === false);
+                                $c['raw_data']['sentiment'] = $sent;
+                                $c['raw_data']['sentiment_reason'] = $gem['reason'] ?? null;
+                                $c['raw_data']['out_of_scope'] = ($isRel === false);
+                            }
+
+                            if (empty($c['out_of_scope'])) {
+                                $sentimentCounts[$c['sentiment']] = ($sentimentCounts[$c['sentiment']] ?? 0) + 1;
+                                $inScopeTotal++;
+                            } else {
+                                $excludedOutOfScope++;
+                            }
+                        }
+                        unset($c);
+                    }
+                    unset($platComments);
+
+                    if ($inScopeTotal > 0) {
+                        $total = $inScopeTotal;
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Gemini comment batch classification failed in scrapeViaApify: ' . $e->getMessage());
+            }
+        }
+
+        if ($postContext !== null && empty($postMetadata['post_text'])) {
+            $postMetadata['post_text'] = $postContext;
+        }
+
+        $safeTotal = max(1, $total);
+
         return [
             'status' => 'success',
             'post_metadata' => $postMetadata,
             'comments_by_platform' => $commentsByPlatform,
             'analytics' => [
                 'total_comments' => $total,
+                'excluded_out_of_scope' => $excludedOutOfScope,
                 'sentiment_distribution' => [
-                    'positive' => round(($sentimentCounts['positive'] / $total) * 100),
-                    'neutral' => round(($sentimentCounts['neutral'] / $total) * 100),
-                    'negative' => round(($sentimentCounts['negative'] / $total) * 100),
+                    'positive' => round(($sentimentCounts['positive'] / $safeTotal) * 100),
+                    'neutral' => round(($sentimentCounts['neutral'] / $safeTotal) * 100),
+                    'negative' => round(($sentimentCounts['negative'] / $safeTotal) * 100),
                 ],
             ],
         ];
@@ -1999,8 +2212,6 @@ class AiScraperService
         if (!empty($rubric)) {
             $posRules = mb_strtolower($rubric['positive_rules'] ?? ($rubric['positive'] ?? ''));
             $negRules = mb_strtolower($rubric['negative_rules'] ?? ($rubric['negative'] ?? ''));
-            $preferredSide = mb_strtolower($rubric['preferred_side'] ?? ($rubric['target_stance'] ?? ''));
-            $opposedSide = mb_strtolower($rubric['opposed_side'] ?? '');
 
             // Crime scenario: Condemning crime/criminals is POSITIVE for society/justice stance
             $isAntiCrime = str_contains($posRules, 'شجب') || str_contains($posRules, 'إدانة') || str_contains($posRules, 'جريمة') || str_contains($posRules, 'المجرم') || str_contains($posRules, 'عقاب');
@@ -2016,31 +2227,44 @@ class AiScraperService
                     }
                 }
             }
+        }
 
-            // Stance / conflict side matching
-            if (!empty($preferredSide)) {
-                $prefKeywords = array_filter(explode(' ', $preferredSide), fn($w) => mb_strlen(trim($w)) > 2);
-                foreach ($prefKeywords as $pw) {
-                    if (str_contains($normalized, $pw)) {
-                        return [
-                            'sentiment' => 'positive',
-                            'score' => 0.88,
-                            'reason' => "دعم ومؤازرة القضية/الطرف المفضل ({$preferredSide}) وفق المعيار المخصص",
-                        ];
-                    }
-                }
+        // 0-B. Stance-Based Defense vs Narrative Complaint Heuristics (Public/Healthcare Service Monitoring)
+        // Defense of the entity: directing complainers to official channels (937), refuting closure rumors, or criticizing defamers
+        $defensePatterns = [
+            '937', '٩٣٧', 'القنوات الرسمية', 'قنوات رسمية', 'بلاغ رسمي', 'ارفع بلاغ', 'تقدم بشكوى رسمية',
+            'تشهير', 'يشهر', 'تبي تشهر', 'هدفك التشهير', 'بدون دليل', 'غير صحيح', 'كلام غير صحيح',
+            'الأنوار مضاءة', 'الانوار مضاءة', 'المركز مفتوح', 'مفتوح الآن', 'شغالين', 'على رأس العمل',
+            'يداومون', 'موجودين', 'ما قصروا', 'ماقصروا', 'جهودهم تذكر', 'جهود تشكر', 'كفو عليهم',
+        ];
+        foreach ($defensePatterns as $dp) {
+            if (str_contains($normalized, mb_strtolower($dp))) {
+                return [
+                    'sentiment' => 'positive',
+                    'score' => 0.90,
+                    'reason' => 'دفاع عن المنشأة أو توجيه للقنوات الرسمية أو نفي للإشاعات يخدم سمعة الجهة',
+                ];
             }
-            if (!empty($opposedSide)) {
-                $oppKeywords = array_filter(explode(' ', $opposedSide), fn($w) => mb_strlen(trim($w)) > 2);
-                foreach ($oppKeywords as $ow) {
-                    if (str_contains($normalized, $ow)) {
-                        return [
-                            'sentiment' => 'negative',
-                            'score' => 0.88,
-                            'reason' => "ذكر الطرف المعادي/المعارض ({$opposedSide}) وفق المعيار المخصص",
-                        ];
-                    }
-                }
+        }
+
+        // Narrative / Story / Indirect Complaints & Service Deficiencies (even without explicit profanity)
+        $narrativeComplaintPatterns = [
+            'المركز فاضي', 'فاضي ما فيه', 'الموظفين مجتمعين', 'مجتمعين على', 'سوالف وقهوة',
+            'المركز مقفل', 'المركز مغلق', 'مقفلين', 'مغلق قبل', 'ما فيه دكتور', 'مافي دكتور',
+            'مابه دكتور', 'لا يوجد طبيب', 'بدون طبيب', 'غياب الأطباء', 'غياب الطبيب', 'غياب الكوادر',
+            'نقص كوادر', 'نقص أطباء', 'نقص اطباء', 'طول الانتظار', 'ساعات انتظار', 'انتظار طويل',
+            'مواعيد بعيدة', 'مواعيد بالشهور', 'ما يردون', 'مايردون', 'لا حياة لمن تنادي',
+            'رحت وما لقيت', 'جيت وما لقيت', 'راجعت المركز وما', 'رحت بنتي', 'وديت ولدي',
+            'وين الرقابة', 'وين المدير', 'وين المسؤول', 'تسيب', 'محسوبية', 'واسطة', 'تكدس',
+            'سوء تعامل', 'سوء الخدمة', 'سوء الادارة', 'سوء الإدارة', 'تقصير واضح', 'تقصير في',
+        ];
+        foreach ($narrativeComplaintPatterns as $ncp) {
+            if (str_contains($normalized, mb_strtolower($ncp))) {
+                return [
+                    'sentiment' => 'negative',
+                    'score' => 0.90,
+                    'reason' => 'عرض تجربة سلبية أو شكوى خدمية/سردية تضر بصورة المنشأة',
+                ];
             }
         }
 
@@ -2587,6 +2811,228 @@ class AiScraperService
         }
 
         return $res;
+    }
+
+    /**
+     * Re-analyze all articles and comments in a collection against its effective (or provided) sentiment rubric.
+     */
+    public function reanalyzeCollectionData(\App\Models\Collection $collection, ?array $rubric = null): void
+    {
+        $effectiveRubric = !empty($rubric) ? $rubric : $collection->getEffectiveRubric();
+        $isKeyword = empty($collection->link) || $collection->link === '#' || !empty($collection->keywords) || str_starts_with((string) $collection->name, 'رصد كلمة:') || str_starts_with((string) $collection->name, 'كلمة:');
+
+        $keywords = [];
+        if (!empty($collection->keywords)) {
+            $keywords = is_array($collection->keywords)
+                ? $collection->keywords
+                : array_values(array_filter(array_map('trim', explode(',', (string) $collection->keywords))));
+        }
+        if (empty($keywords) && !empty($collection->name)) {
+            $cleanName = trim((string) preg_replace('/^(?:رصد\s+)?(?:تريند|كلمة):\s*/u', '', (string) $collection->name));
+            if ($cleanName !== '') {
+                $keywords = [$cleanName];
+            }
+        }
+
+        $articles = $collection->articles()->withoutGlobalScopes()->with('comments')->get();
+        if ($articles->isEmpty()) {
+            return;
+        }
+
+        if ($isKeyword) {
+            $postsToClassify = [];
+            $seenFingerprints = [];
+
+            foreach ($articles as $article) {
+                $fullText = trim(($article->title ?? '') . "\n" . ($article->summary ?? '') . "\n" . ($article->content ?? ''));
+                $normFp = preg_replace('/https?:\/\/\S+/u', '', $fullText);
+                $normFp = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', (string) $normFp);
+                $normFp = mb_strtolower(trim((string) preg_replace('/\s+/u', ' ', (string) $normFp)));
+                $fpKey = mb_strlen($normFp) >= 15 ? md5(mb_substr($normFp, 0, 220)) : null;
+
+                $isDup = $fpKey && isset($seenFingerprints[$fpKey]);
+                if ($fpKey) {
+                    $seenFingerprints[$fpKey] = true;
+                }
+
+                $isOutOfScope = $isDup || $this->isOutOfScopeForRubric($fullText, $keywords, $effectiveRubric);
+                $raw = $article->raw_data ?? [];
+                $raw['is_duplicate'] = $isDup;
+
+                if ($isOutOfScope) {
+                    $raw['out_of_scope'] = true;
+                    $article->raw_data = $raw;
+                    $article->save();
+                    continue;
+                }
+
+                $raw['out_of_scope'] = false;
+                $article->raw_data = $raw;
+
+                $postsToClassify[] = [
+                    'id' => (string) $article->id,
+                    'text' => $fullText,
+                    'url' => $article->url ?? '',
+                ];
+            }
+
+            if (!empty($postsToClassify)) {
+                $classified = $this->geminiService->classifyPostsSentiment(
+                    $postsToClassify,
+                    $effectiveRubric,
+                    !empty($keywords) ? implode(', ', $keywords) : null
+                );
+
+                foreach ($articles as $article) {
+                    $artId = (string) $article->id;
+                    $raw = $article->raw_data ?? [];
+                    if (!empty($raw['out_of_scope'])) {
+                        continue;
+                    }
+
+                    $fullText = trim(($article->title ?? '') . "\n" . ($article->summary ?? '') . "\n" . ($article->content ?? ''));
+                    if (isset($classified[$artId])) {
+                        $res = $classified[$artId];
+                        $raw['sentiment_reason'] = $res['reason'] ?? null;
+                        $raw['out_of_scope'] = ($res['is_relevant'] ?? true) === false;
+                        if (!empty($effectiveRubric)) {
+                            $raw['sentiment_rubric_used'] = $effectiveRubric;
+                        }
+                        $article->sentiment = $res['sentiment'] ?? 'neutral';
+                        $article->sentiment_score = $res['sentiment_score'] ?? 0.5;
+                        $article->raw_data = $raw;
+                        $article->save();
+                    } else {
+                        $fb = $this->classifyArabicSentiment($fullText, $effectiveRubric, $keywords);
+                        $raw['sentiment_reason'] = $fb['reason'] ?? null;
+                        $article->sentiment = $fb['sentiment'];
+                        $article->sentiment_score = $fb['score'];
+                        $article->raw_data = $raw;
+                        $article->save();
+                    }
+                }
+            }
+        }
+
+        // Re-analyze comments for all articles in the collection
+        foreach ($articles as $article) {
+            if ($article->comments->isEmpty()) {
+                continue;
+            }
+
+            $postContext = trim(($article->title ?? '') . "\n" . ($article->content ?? ''));
+            $commentsPayload = [];
+            foreach ($article->comments as $comment) {
+                $commentsPayload[] = [
+                    'id' => (string) $comment->id,
+                    'text' => $comment->comment_text ?? '',
+                ];
+            }
+
+            $classifiedComments = $this->geminiService->classifyPostsSentiment(
+                $commentsPayload,
+                $effectiveRubric,
+                !empty($keywords) ? implode(', ', $keywords) : null,
+                $postContext !== '' ? $postContext : null
+            );
+
+            $sentimentCounts = ['positive' => 0, 'neutral' => 0, 'negative' => 0];
+            $inScopeTotal = 0;
+
+            foreach ($article->comments as $comment) {
+                $cId = (string) $comment->id;
+                $cRaw = $comment->raw_data ?? [];
+
+                if (isset($classifiedComments[$cId])) {
+                    $cRes = $classifiedComments[$cId];
+                    $cSentiment = $cRes['sentiment'] ?? 'neutral';
+                    $cScore = $cRes['sentiment_score'] ?? 0.5;
+                    $cReason = $cRes['reason'] ?? null;
+                    $cOutOfScope = ($cRes['is_relevant'] ?? true) === false;
+                } else {
+                    $fb = $this->classifyArabicSentiment($comment->comment_text ?? '', $effectiveRubric, $keywords);
+                    $cSentiment = $fb['sentiment'];
+                    $cScore = $fb['score'];
+                    $cReason = $fb['reason'] ?? null;
+                    $cOutOfScope = false;
+                }
+
+                $cRaw['sentiment_reason'] = $cReason;
+                $cRaw['out_of_scope'] = $cOutOfScope;
+                if (!empty($effectiveRubric)) {
+                    $cRaw['sentiment_rubric_used'] = $effectiveRubric;
+                }
+
+                $comment->update([
+                    'sentiment' => $cSentiment,
+                    'sentiment_score' => $cScore,
+                    'raw_data' => $cRaw,
+                ]);
+
+                if (!$cOutOfScope) {
+                    $sentimentCounts[$cSentiment] = ($sentimentCounts[$cSentiment] ?? 0) + 1;
+                    $inScopeTotal++;
+                }
+            }
+
+            $artRaw = $article->raw_data ?? [];
+            $artRaw['analytics'] = array_merge($artRaw['analytics'] ?? [], [
+                'total_comments' => $inScopeTotal,
+                'sentiment_counts' => $sentimentCounts,
+            ]);
+            $article->raw_data = $artRaw;
+
+            if (!$isKeyword && $inScopeTotal > 0) {
+                $dominant = 'neutral';
+                if ($sentimentCounts['positive'] > $sentimentCounts['negative'] && $sentimentCounts['positive'] >= $sentimentCounts['neutral']) {
+                    $dominant = 'positive';
+                } elseif ($sentimentCounts['negative'] > $sentimentCounts['positive'] && $sentimentCounts['negative'] >= $sentimentCounts['neutral']) {
+                    $dominant = 'negative';
+                }
+                $article->sentiment = $dominant;
+            }
+            $article->save();
+        }
+    }
+
+    /**
+     * Re-analyze all collections and regenerate recent reports for a tenant after a global rubric update.
+     */
+    public function reanalyzeTenantData(\App\Models\Tenant $tenant, ?array $rubric = null): void
+    {
+        $effectiveRubric = $rubric ?? $tenant->getSentimentRubric();
+
+        $collections = \App\Models\Collection::withoutGlobalScopes()
+            ->where('tenant_id', $tenant->id)
+            ->get();
+
+        foreach ($collections as $collection) {
+            try {
+                $colRubric = !empty($collection->sentiment_rubric) ? $collection->sentiment_rubric : $effectiveRubric;
+                $this->reanalyzeCollectionData($collection, $colRubric);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('reanalyzeCollectionData failed for collection #' . $collection->id . ': ' . $e->getMessage());
+            }
+        }
+
+        // Refresh recent reports so their cached parameters/stats/HTML reflect the re-analyzed data
+        $reports = \App\Models\Report::withoutGlobalScopes()
+            ->where('tenant_id', $tenant->id)
+            ->latest()
+            ->limit(15)
+            ->get();
+
+        $reportGenerator = app(\App\Services\ReportGeneratorService::class);
+        foreach ($reports as $report) {
+            try {
+                $params = $report->parameters ?? [];
+                unset($params['ai_summary']);
+                $report->parameters = $params;
+                $reportGenerator->generate($report);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Report regeneration failed for report #' . $report->id . ': ' . $e->getMessage());
+            }
+        }
     }
 }
 

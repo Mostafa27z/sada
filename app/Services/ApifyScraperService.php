@@ -227,6 +227,8 @@ class ApifyScraperService
                         'replies' => $replies,
                         'reach' => $reach,
                         'engagement' => $engagement,
+                        'post_text' => !empty($data['text']) ? trim((string) $data['text']) : null,
+                        'author_name' => !empty($data['author']['name']) ? trim((string) $data['author']['name']) : $username,
                     ];
                 }
             }

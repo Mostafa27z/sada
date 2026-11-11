@@ -138,6 +138,7 @@ class TenantController extends Controller
 
         $request->validate([
             'sentiment_rubric' => ['nullable', 'array'],
+            'sentiment_rubric.topic_context' => ['nullable', 'string'],
             'sentiment_rubric.stance_description' => ['nullable', 'string'],
             'sentiment_rubric.positive_rules' => ['nullable', 'string'],
             'sentiment_rubric.negative_rules' => ['nullable', 'string'],
@@ -150,6 +151,12 @@ class TenantController extends Controller
         $settings['sentiment_rubric'] = $request->input('sentiment_rubric');
         $tenant->settings = $settings;
         $tenant->save();
+
+        try {
+            app(\App\Services\AiScraperService::class)->reanalyzeTenantData($tenant, $tenant->getSentimentRubric());
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Tenant rubric re-analysis warning: ' . $e->getMessage());
+        }
 
         return $this->success([
             'tenant_id' => $tenant->id,

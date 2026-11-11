@@ -29,12 +29,45 @@ class CollectionResource extends JsonResource
             });
         }
 
+        $effectiveRubric = $this->getEffectiveRubric();
+        if ($isKeyword && $articles->isNotEmpty()) {
+            $keywordsArray = $keyword
+                ? array_values(array_filter(array_map('trim', explode(',', (string) $keyword))))
+                : [];
+            $aiScraper = app(\App\Services\AiScraperService::class);
+            $seenFingerprints = [];
+
+            $articles = $articles->filter(function ($a) use ($aiScraper, $keywordsArray, $effectiveRubric, &$seenFingerprints) {
+                if ((bool) data_get($a->raw_data ?? [], 'out_of_scope', false)) {
+                    return false;
+                }
+                $fullText = trim(($a->title ?? '') . "\n" . ($a->summary ?? '') . "\n" . ($a->content ?? ''));
+                if ($aiScraper->isOutOfScopeForRubric($fullText, $keywordsArray, $effectiveRubric)) {
+                    return false;
+                }
+                $normFp = preg_replace('/https?:\/\/\S+/u', '', $fullText);
+                $normFp = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', (string) $normFp);
+                $normFp = mb_strtolower(trim((string) preg_replace('/\s+/u', ' ', (string) $normFp)));
+                if (mb_strlen($normFp) >= 15) {
+                    $fpKey = md5(mb_substr($normFp, 0, 220));
+                    if (isset($seenFingerprints[$fpKey])) {
+                        return false;
+                    }
+                    $seenFingerprints[$fpKey] = true;
+                }
+                return true;
+            })->values();
+        }
+
         // Sort chronologically descending so newest news/posts appear first
         $articles = $articles->sortByDesc(function ($a) {
             return $a->published_at ? strtotime($a->published_at) : ($a->created_at ? strtotime($a->created_at) : 0);
         })->values();
 
-        $allComments = $articles->flatMap(fn($a) => $a->comments);
+        $allComments = $articles
+            ->flatMap(fn($a) => $a->comments)
+            ->reject(fn($c) => (bool) data_get($c->raw_data ?? [], 'out_of_scope', false))
+            ->values();
 
         if ($allComments->isNotEmpty()) {
             $positive = $allComments->where('sentiment', 'positive')->count();

@@ -51,8 +51,43 @@ class ReportGeneratorService
             // Specific Campaign requested
             $collection = Collection::withoutGlobalScopes()->with(['articles.comments'])->find($collectionId);
             $articles = $collection
-                ? $collection->articles()->withoutGlobalScopes()->with('comments')->latest()->limit(100)->get()
+                ? $collection->articles()->withoutGlobalScopes()->with('comments')->latest()->limit(500)->get()
                 : collect();
+
+            if ($collection && $articles->isNotEmpty()) {
+                $isKeywordCol = empty($collection->link) || $collection->link === '#' || !empty($collection->keywords) || str_starts_with((string) $collection->name, 'رصد كلمة:') || str_starts_with((string) $collection->name, 'كلمة:');
+                if ($isKeywordCol) {
+                    $effectiveRubric = $collection->getEffectiveRubric();
+                    $keywordsArray = !empty($collection->keywords)
+                        ? (is_array($collection->keywords) ? $collection->keywords : array_values(array_filter(array_map('trim', explode(',', (string) $collection->keywords)))))
+                        : [];
+                    if (empty($keywordsArray) && !empty($collection->name)) {
+                        $keywordsArray = [trim((string) preg_replace('/^(?:رصد\s+)?(?:تريند|كلمة):\s*/u', '', (string) $collection->name))];
+                    }
+                    $aiScraper = app(\App\Services\AiScraperService::class);
+                    $seenFingerprints = [];
+                    $articles = $articles->filter(function ($a) use ($aiScraper, $keywordsArray, $effectiveRubric, &$seenFingerprints) {
+                        if ((bool) data_get($a->raw_data ?? [], 'out_of_scope', false)) {
+                            return false;
+                        }
+                        $fullText = trim(($a->title ?? '') . "\n" . ($a->summary ?? '') . "\n" . ($a->content ?? ''));
+                        if ($aiScraper->isOutOfScopeForRubric($fullText, $keywordsArray, $effectiveRubric)) {
+                            return false;
+                        }
+                        $normFp = preg_replace('/https?:\/\/\S+/u', '', $fullText);
+                        $normFp = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', (string) $normFp);
+                        $normFp = mb_strtolower(trim((string) preg_replace('/\s+/u', ' ', (string) $normFp)));
+                        if (mb_strlen($normFp) >= 15) {
+                            $fpKey = md5(mb_substr($normFp, 0, 220));
+                            if (isset($seenFingerprints[$fpKey])) {
+                                return false;
+                            }
+                            $seenFingerprints[$fpKey] = true;
+                        }
+                        return true;
+                    })->values();
+                }
+            }
 
             // Strict comments: ONLY from this collection's articles (never fall back to unrelated tenant comments)
             $comments = $articles->flatMap(fn($a) => $a->comments)->values();
@@ -228,7 +263,13 @@ class ReportGeneratorService
             $comments = $articles->flatMap(fn($a) => $a->comments)->values();
         }
 
-        // Save comments snapshot
+        // Exclude comments flagged as out-of-scope by the semantic rubric (they must not enter the percentages)
+        $comments = $comments
+            ->reject(fn($c) => (bool) data_get($c->raw_data ?? [], 'out_of_scope', false))
+            ->sortByDesc(fn($c) => (int) ($c->likes_count ?? 0))
+            ->values();
+
+        // Save comments snapshot (ALL comments — no truncation)
         $params['comments'] = $comments->map(function ($c) {
             return [
                 'id' => $c->id,
@@ -247,22 +288,51 @@ class ReportGeneratorService
         $neg = $articles->where('sentiment', 'negative')->count();
         $commentsCount = $comments->count();
 
-        $stats = [
-            'total' => $total,
-            'positive' => $pos,
-            'neutral' => $neu,
-            'negative' => $neg,
-            'comments' => $commentsCount,
+        $commentStats = [
+            'total' => $commentsCount,
+            'positive' => $comments->where('sentiment', 'positive')->count(),
+            'neutral' => $comments->where('sentiment', 'neutral')->count(),
+            'negative' => $comments->where('sentiment', 'negative')->count(),
         ];
+        $params['comment_stats'] = $commentStats;
+
+        $isSinglePostCommentReport = $total <= 1 && $commentsCount > 0;
+        $stats = $isSinglePostCommentReport
+            ? [
+                'total' => $commentsCount,
+                'positive' => $commentStats['positive'],
+                'neutral' => $commentStats['neutral'],
+                'negative' => $commentStats['negative'],
+                'comments' => $commentsCount,
+            ]
+            : [
+                'total' => $total,
+                'positive' => $pos,
+                'neutral' => $neu,
+                'negative' => $neg,
+                'comments' => $commentsCount,
+            ];
 
         // 3. AI Executive Summary (if not already cached in parameters)
         $aiSummary = $params['ai_summary'] ?? null;
         if (!$aiSummary && ($total > 0 || $commentsCount > 0)) {
             $sampleTexts = $articles->pluck('content')->filter()->values()->all();
-            if (empty($sampleTexts) && $comments->isNotEmpty()) {
-                $sampleTexts = $comments->pluck('comment_text')->filter()->values()->take(20)->all();
+            if ($comments->isNotEmpty()) {
+                // Include a representative sample of the audience comments (most-liked first) in the summary input
+                $sampleTexts = array_merge(
+                    array_slice($sampleTexts, 0, 10),
+                    $comments->pluck('comment_text')->filter()->values()->take(60)->all()
+                );
             }
-            $aiData = $this->gemini->generateReportExecutiveSummary($companyName, $sampleTexts, $stats);
+            $summaryStats = $commentsCount > 0
+                ? array_merge($stats, [
+                    'total' => $commentStats['total'],
+                    'positive' => $commentStats['positive'],
+                    'neutral' => $commentStats['neutral'],
+                    'negative' => $commentStats['negative'],
+                ])
+                : $stats;
+            $aiData = $this->gemini->generateReportExecutiveSummary($companyName, $sampleTexts, $summaryStats);
             $aiSummary = $aiData['summary'] ?? null;
             $params['ai_summary'] = $aiSummary;
             $params['positive_insights'] = $aiData['positive_insights'] ?? [];
@@ -293,6 +363,7 @@ class ReportGeneratorService
             'recommendations' => $params['recommendations'] ?? [],
             'articles' => $articles,
             'comments' => $comments,
+            'commentStats' => $commentStats,
         ]);
 
         $filename = 'reports/report_' . $report->id . '_' . time() . '.html';
@@ -455,9 +526,16 @@ class ReportGeneratorService
         $recommendations = $data['recommendations'] ?? [];
         $articles = $data['articles'] ?? [];
 
-        $posPct = $stats['total'] > 0 ? round(($stats['positive'] / $stats['total']) * 100) : 0;
-        $neuPct = $stats['total'] > 0 ? round(($stats['neutral'] / $stats['total']) * 100) : 0;
-        $negPct = $stats['total'] > 0 ? round(($stats['negative'] / $stats['total']) * 100) : 0;
+        // When audience comments exist, the KPI cards reflect the comments' sentiment (the real signal of a monitored post)
+        $commentStats = $data['commentStats'] ?? null;
+        $useCommentKpis = is_array($commentStats) && ($commentStats['total'] ?? 0) > 0;
+        $kpi = $useCommentKpis ? $commentStats : $stats;
+        $kpiTotalLabel = $useCommentKpis ? 'إجمالي التعليقات المرصودة' : 'إجمالي المنشورات المرصودة';
+        $articlesCountLabel = is_countable($articles) ? count($articles) : 0;
+
+        $posPct = $kpi['total'] > 0 ? round(($kpi['positive'] / $kpi['total']) * 100) : 0;
+        $neuPct = $kpi['total'] > 0 ? round(($kpi['neutral'] / $kpi['total']) * 100) : 0;
+        $negPct = $kpi['total'] > 0 ? round(($kpi['negative'] / $kpi['total']) * 100) : 0;
 
         $logoHtml = $companyLogo
             ? "<img src='{$companyLogo}' alt='{$companyName}' style='max-height: 52px; max-width: 140px; object-fit: contain;' />"
@@ -523,10 +601,10 @@ class ReportGeneratorService
 
         $comments = $data['comments'] ?? collect();
         $commentRows = '';
-        foreach ($comments->take(40) as $cIndex => $comment) {
+        foreach ($comments as $cIndex => $comment) {
             $cNum = $cIndex + 1;
             $cAuthor = htmlspecialchars($comment->author ?? 'متابع', ENT_QUOTES, 'UTF-8');
-            $cText = htmlspecialchars(Str::limit($comment->comment_text ?? '—', 120), ENT_QUOTES, 'UTF-8');
+            $cText = htmlspecialchars(Str::limit($comment->comment_text ?? '—', 500), ENT_QUOTES, 'UTF-8');
             $cSentiment = $comment->sentiment ?? 'neutral';
             $csColor = match ($cSentiment) {
                 'positive' => '#15803d',
@@ -714,20 +792,20 @@ class ReportGeneratorService
     <!-- KPI Statistics Grid -->
     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
         <div class="kpi-card">
-            <div style="font-size: 10px; color: #6b7280; font-weight: bold;">إجمالي المنشورات المرصودة</div>
-            <div style="font-size: 20px; font-weight: 900; color: {$primary}; margin-top: 4px;">{$stats['total']}</div>
+            <div style="font-size: 10px; color: #6b7280; font-weight: bold;">{$kpiTotalLabel}</div>
+            <div style="font-size: 20px; font-weight: 900; color: {$primary}; margin-top: 4px;">{$kpi['total']}</div>
         </div>
         <div class="kpi-card">
             <div style="font-size: 10px; color: #6b7280; font-weight: bold;">المشاعر الإيجابية</div>
-            <div style="font-size: 20px; font-weight: 900; color: #16a34a; margin-top: 4px;">{$posPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$stats['positive']})</span></div>
+            <div style="font-size: 20px; font-weight: 900; color: #16a34a; margin-top: 4px;">{$posPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$kpi['positive']})</span></div>
         </div>
         <div class="kpi-card">
             <div style="font-size: 10px; color: #6b7280; font-weight: bold;">المشاعر المحايدة</div>
-            <div style="font-size: 20px; font-weight: 900; color: #4b5563; margin-top: 4px;">{$neuPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$stats['neutral']})</span></div>
+            <div style="font-size: 20px; font-weight: 900; color: #4b5563; margin-top: 4px;">{$neuPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$kpi['neutral']})</span></div>
         </div>
         <div class="kpi-card">
             <div style="font-size: 10px; color: #6b7280; font-weight: bold;">المشاعر السلبية</div>
-            <div style="font-size: 20px; font-weight: 900; color: #dc2626; margin-top: 4px;">{$negPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$stats['negative']})</span></div>
+            <div style="font-size: 20px; font-weight: 900; color: #dc2626; margin-top: 4px;">{$negPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$kpi['negative']})</span></div>
         </div>
     </div>
 
@@ -735,7 +813,7 @@ class ReportGeneratorService
     <div style="margin-top: 15px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <h3 style="margin: 0; font-size: 13px; font-weight: 900; color: #111827;">سجل المنشورات والرصد التفصيلي</h3>
-            <span style="font-size: 10px; color: #6b7280;">آخر 50 منشور مرصود</span>
+            <span style="font-size: 10px; color: #6b7280;">{$articlesCountLabel} منشور مرصود</span>
         </div>
         <table>
             <thead>

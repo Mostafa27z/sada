@@ -39,14 +39,14 @@ class GeminiAnalyticsService
     /**
      * Call Gemini with multi-model fallback in case of 503 capacity or 429 rate limit errors.
      */
-    protected function callGemini(array $messages, int $timeout = 120, array $responseFormat = ['type' => 'json_object']): ?string
+    protected function callGemini(array $messages, int $timeout = 120, array $responseFormat = ['type' => 'json_object'], ?string $preferredModel = null): ?string
     {
         if (empty($this->apiKey)) {
             Log::error("GeminiAnalyticsService: GEMINI_API_KEY is empty. Please set it in .env or SystemSetting.");
             return null;
         }
 
-        $modelsToTry = array_unique(array_merge([$this->model], $this->fallbackModels));
+        $modelsToTry = array_unique(array_filter(array_merge([$preferredModel, $this->model], $this->fallbackModels)));
 
         foreach ($modelsToTry as $candidateModel) {
             $payload = [
@@ -152,33 +152,33 @@ class GeminiAnalyticsService
         $opposedSide = $rubric['opposed_side'] ?? '';
         $topic = $rubric['topic_context'] ?? ($rubric['topic'] ?? '');
 
-        $chunk = "\n⚠️ تطبيق معيار ومحددات الموقف والتصنيف المخصصة للعميل (Custom Stance & Sentiment Rubric):\n";
-        $chunk .= "يجب تقييم وتصنيف المشاعر بناءً على الموقف الموجه وزاوية النظر المحددة للعميل وليس مجرد المشاعر اللغوية السطحية:\n";
+        $chunk = "\n⚠️ معيار الموقف والتصنيف المخصص للعميل (Custom Stance & Sentiment Rubric) — له الأولوية المطلقة على أي قاعدة عامة أخرى:\n";
+        $chunk .= "قاعدة الحكم الجوهرية: يُحكم على كل نص بناءً على موقف كاتبه من الجهة/القضية المحددة أدناه وهل يخدم صورتها أم يضرها، وليس بناءً على نبرة النص أو ألفاظه أو حدّة لغته. فالرد الحاد على شاكٍ أو مشهِّر دفاعاً عن الجهة = إيجابي، والشكوى المصاغة بهدوء أو على شكل قصة = سلبي.\n";
         if (!empty($topic)) {
-            $chunk .= "- سياق الموضوع/القضية: {$topic}\n";
+            $chunk .= "- سياق الموضوع/القضية ونطاقه: {$topic}\n";
         }
         if (!empty($stance)) {
             $chunk .= "- الموقف والتوجه الاستراتيجي للعميل: {$stance}\n";
         }
         if (!empty($preferredSide)) {
-            $chunk .= "- الطرف/القضية التي يتبناها العميل (الحق/الحليف): {$preferredSide}\n";
+            $chunk .= "- الطرف/القضية المؤيدة (الحليف): {$preferredSide}\n";
         }
         if (!empty($opposedSide)) {
-            $chunk .= "- الطرف/الظاهرة المعارضة (الخصم/المعتدي/الجريمة): {$opposedSide}\n";
+            $chunk .= "- الطرف/الظاهرة المعارضة (الخصم): {$opposedSide}\n";
         }
         if (!empty($posRules)) {
-            $chunk .= "- ما يُصنف كـ 'positive' (إيجابي / +): {$posRules}\n"
-                . "  [قاعدة أساسية]: إذا كان الموضوع جريمة أو فضيحة، فإن استنكار وذم الجريمة والمجرم والتعاطف مع الضحية يُصنف كإيجابي (+) لأنه يدعم موقف العميل وقيم العدالة. وفي النزاعات والحروب، فإن دعم الطرف الحليف أو انتقاد وتراجع الخصم يُصنف كإيجابي (+).\n";
-        } else {
-            $chunk .= "- [قاعدة تصنيف]: إذا كان المحتوى يدعم موقف العميل أو يذم الظواهر السلبية كالجريمة والفساد، يُصنف 'positive'.\n";
+            $chunk .= "- ما يُصنف كـ 'positive' (إيجابي / +):\n{$posRules}\n";
         }
         if (!empty($negRules)) {
-            $chunk .= "- ما يُصنف كـ 'negative' (سلبي / -): {$negRules}\n"
-                . "  [قاعدة أساسية]: تبرير الجريمة أو الدفاع عن الجاني، أو مهاجمة الطرف الحليف والإشادة بالخصم يُصنف كسلبي (-).\n";
+            $chunk .= "- ما يُصنف كـ 'negative' (سلبي / -):\n{$negRules}\n";
         }
         if (!empty($neuRules)) {
-            $chunk .= "- ما يُصنف كـ 'neutral' (محايد): {$neuRules}\n";
+            $chunk .= "- ما يُصنف كـ 'neutral' (محايد):\n{$neuRules}\n";
         }
+        if (empty($posRules) && empty($negRules)) {
+            $chunk .= "- [قاعدة احتياطية]: إذا لم تتوفر قواعد تفصيلية، فالمحتوى الذي يدعم موقف العميل أو يذم الظواهر السلبية (كالجريمة والفساد) يُصنف 'positive'، والذي يضر العميل أو يبرر الظاهرة السلبية يُصنف 'negative'.\n";
+        }
+        $chunk .= "- أي بند يخص «خارج النطاق» أو الاستبعاد في القواعد أعلاه يعني أن النص لا يدخل في النسب إطلاقاً (is_relevant = false).\n";
 
         return $chunk;
     }
@@ -294,7 +294,7 @@ PROMPT;
      * Accurately classify sentiment (positive, negative, neutral) for individual posts,
      * with support for custom stance/rubric rules.
      */
-    public function classifyPostsSentiment(array $posts, ?array $rubric = null, ?array $keywords = null): array
+    public function classifyPostsSentiment(array $posts, ?array $rubric = null, ?array $keywords = null, ?string $postContext = null): array
     {
         if (empty($posts) || empty($this->apiKey)) {
             return [];
@@ -305,14 +305,18 @@ PROMPT;
         foreach ($posts as $idx => $post) {
             $text = is_array($post) ? ($post['text'] ?? $post['content'] ?? '') : (string)$post;
             $text = trim(preg_replace('/\s+/', ' ', (string)$text));
-            if (empty($text) || mb_strlen($text) < 4 || mb_strtolower($text) === 'unknown') {
+            if (empty($text) || mb_strlen($text) < 2 || mb_strtolower($text) === 'unknown') {
                 continue;
             }
-            $pId = is_array($post) ? ($post['post_id'] ?? $post['external_id'] ?? (string)$idx) : (string)$idx;
+            // NOTE: callers may identify items via `id`, `post_id` or `external_id` — all must be honored,
+            // otherwise results can't be matched back to the records being re-analyzed.
+            $pId = is_array($post)
+                ? ($post['id'] ?? $post['post_id'] ?? $post['external_id'] ?? (string)$idx)
+                : (string)$idx;
             $itemsToClassify[] = [
                 'index' => $idx,
                 'id' => (string)$pId,
-                'text' => mb_substr($text, 0, 350),
+                'text' => mb_substr($text, 0, 700),
             ];
         }
 
@@ -322,6 +326,8 @@ PROMPT;
 
         $results = [];
         $rubricChunk = $this->buildRubricPromptChunk($rubric);
+        $hasRubric = !empty($rubricChunk);
+        $topicScope = trim((string)($rubric['topic_context'] ?? ($rubric['topic'] ?? '')));
 
         $relevanceChunk = "";
         if (!empty($keywords)) {
@@ -337,21 +343,47 @@ PROMPT;
 REL;
         }
 
-        // Batch in groups of 30 for high reliability and fast response
-        $chunks = array_chunk($itemsToClassify, 30);
+        if ($topicScope !== '') {
+            $relevanceChunk .= "\n⚠️ نطاق الرصد (Scope): النطاق المقبول هو فقط: {$topicScope}\n"
+                . "- ضع \"is_relevant\": false لأي نص يخص جهة أو منطقة أو قطاعاً آخر خارج هذا النطاق (مثل تجمع صحي آخر أو منطقة أخرى أو أخبار عامة لا علاقة لها بالنطاق)، أو إعلان تجاري/استثماري، أو منشور صادر من الحساب الرسمي للجهة نفسها (ليس صوت جمهور).\n"
+                . "- التعليق القصير الذي يرد على المنشور الأصلي (مثل: «صح كلامك» أو «وش المشكلة؟») يُعتبر ضمن النطاق إذا كان المنشور الأصلي ضمنه.\n";
+        }
+
+        $contextChunk = "";
+        if (!empty($postContext)) {
+            $contextChunk = "\n📌 المنشور الأصلي الذي كُتبت هذه التعليقات رداً عليه (استخدمه لفهم المقصود من التعليقات القصيرة والردود، وليس لتصنيفه):\n\""
+                . mb_substr(trim(preg_replace('/\s+/', ' ', $postContext)), 0, 800) . "\"\n";
+        }
+
+        if ($hasRubric) {
+            $definitionsChunk = <<<DEFS
+المطلوب: لكل عنصر، حدّد أولاً is_relevant ثم صنّف الموقف (positive / negative / neutral) **وفق معيار العميل المخصص أعلاه حصراً**.
+- لا تستخدم أي تعريفات عامة تتعارض مع معيار العميل (مثل: "كل شكوى سلبية" أو "كل خبر تعيين إيجابي") إلا إذا سكت المعيار عن الحالة.
+- الحكم بموقف الكاتب من الجهة وليس بنبرة ألفاظه.
+- اذكر في "reason" بجملة عربية قصيرة سبب التصنيف مستنداً إلى قاعدة من قواعد العميل.
+DEFS;
+        } else {
+            $definitionsChunk = <<<DEFS
+المطلوب: فحص صلة المنشور أولاً، ثم تصنيف المشاعر والمواقف لكل عنصر بدقة وموضوعية إلى إحدى الحالات الثلاث (positive / negative / neutral) بناءً على أثر المحتوى على الشخص أو الكيان المستهدف بالرصد:
+1. "positive": إشادة، شكر، تشجيع، أو أخبار التكليف والتعيين والترقية وتولي المناصب القيادية (مثل: تكليف رئيساً تنفيذياً، تعيين، ترقية، نيل الثقة، فوز، تكريم، تدشين، إنجاز، نجاح، مباركة وتهنئة)، أو أي حدث يصب في مصلحة الكيان/الشخص المستهدف ويعكس ثقة أو تقديراً له.
+2. "negative": إعفاء/إقالة، إنهاء تكليف، شكوى، استياء، تشكيك، نقد، هجوم، تراجع، إهمال، تعثر خدمة، تأخير مواعيد، زحام طوارئ، أو عدم تجاوب وتواصل موجهة ضد الكيان/الشخص المستهدف. احرص على رصد أي شكوى أو تذمر أو انتقاد للخدمات كـ "negative" مع بيان السبب بدقة في حقل "reason".
+3. "neutral": معلومات روتينية مجردة أو استفسار إجرائي لا يحمل أي مكسب أو ترقية أو مدح أو ذم، أو أرقام تواصل ومواعيد دوام.
+DEFS;
+        }
+
+        // Batch in groups of 25 for high reliability and fast response
+        $chunks = array_chunk($itemsToClassify, 25);
 
         foreach ($chunks as $chunk) {
             $prompt = <<<PROMPT
-أنت خبير لغوي واستراتيجي متخصص في تحليل مشاعر منشورات وتعليقات منصات التواصل الاجتماعي ومقالات الرأي العربية واللهجات المحلية (السعودية، الخليجية، المصرية، الشامية، إلخ).
+أنت خبير لغوي واستراتيجي متخصص في تحليل مشاعر ومواقف منشورات وتعليقات منصات التواصل الاجتماعي العربية واللهجات المحلية (السعودية، الخليجية، المصرية، الشامية، إلخ).
 {$rubricChunk}
 {$relevanceChunk}
+{$contextChunk}
 
-المطلوب: فحص صلة المنشور أولاً، ثم تصنيف المشاعر والمواقف لكل عنصر بدقة وموضوعية إلى إحدى الحالات الثلاث (positive / negative / neutral) بناءً على أثر المحتوى على الشخص أو الكيان المستهدف بالرصد:
-1. "positive": أي محتوى يتوافق مع ما تم تعريفه كإيجابي أعلاه، أو إشادة، شكر، تشجيع، أو أخبار التكليف والتعيين والترقية وتولي المناصب القيادية (مثل: تكليف رئيساً تنفيذياً، تعيين، ترقية، نيل الثقة، فوز، تكريم، تدشين، إنجاز، نجاح، مباركة وتهنئة)، أو أي حدث يصب في مصلحة الكيان/الشخص المستهدف ويعكس ثقة أو تقديراً له.
-2. "negative": أي محتوى يتوافق مع ما تم تعريفه كسلبي أعلاه، أو إعفاء/إقالة، إنهاء تكليف، شكوى، استياء، تشكيك، نقد، هجوم، تراجع، إهمال، تعثر خدمة، تأخير مواعيد، زحام طوارئ، أو عدم تجاوب وتواصل موجهة ضد الكيان/الشخص المستهدف. احرص على رصد وتصنيف أي شكوى أو تذمر أو انتقاد للخدمات كـ "negative" فوراً مع بيان السبب بدقة في حقل "reason".
-3. "neutral": معلومات روتينية مجردة أو استفسار إجرائي لا يحمل أي مكسب أو ترقية أو مدح أو ذم، أو أرقام تواصل ومواعيد دوام.
+{$definitionsChunk}
 
-إليك العناصر المطلوب تصنيفها كـ JSON Array:
+إليك العناصر المطلوب تصنيفها كـ JSON Array (صنّف كل عنصر دون استثناء وبنفس قيمة index):
 PROMPT;
 
             $systemInstruction = <<<SYS
@@ -379,32 +411,45 @@ SYS;
                 'type' => 'json_object',
             ];
 
-            $rawContent = $this->callGemini($messages, 90, $responseFormat);
-            if ($rawContent) {
-                $cleaned = preg_replace('/```json|```/', '', $rawContent);
-                $json = json_decode(trim($cleaned), true);
-                $classList = $json['classifications'] ?? (isset($json[0]) ? $json : []);
+            $classList = [];
+            for ($attempt = 0; $attempt < 2 && empty($classList); $attempt++) {
+                $rawContent = $this->callGemini($messages, 90, $responseFormat, env('GEMINI_CLASSIFY_MODEL', 'gemini-flash-latest'));
+                if ($rawContent) {
+                    $cleaned = preg_replace('/```json|```/', '', $rawContent);
+                    $json = json_decode(trim($cleaned), true);
+                    $classList = $json['classifications'] ?? (is_array($json) && isset($json[0]) ? $json : []);
+                }
+            }
 
-                if (is_array($classList)) {
-                    foreach ($classList as $cItem) {
-                        $key = $cItem['id'] ?? (isset($cItem['index']) ? ($chunk[$cItem['index']]['id'] ?? null) : null);
-                        $sent = strtolower((string)($cItem['sentiment'] ?? 'neutral'));
-                        if (!in_array($sent, ['positive', 'negative', 'neutral'])) {
-                            $sent = 'neutral';
-                        }
-                        $score = floatval($cItem['sentiment_score'] ?? 0.8);
-                        if ($score <= 0 || $score > 1.0) $score = 0.85;
+            if (is_array($classList)) {
+                $idByIndex = [];
+                foreach ($chunk as $c) {
+                    $idByIndex[(string)$c['index']] = $c['id'];
+                }
+                foreach ($classList as $cItem) {
+                    if (!is_array($cItem)) {
+                        continue;
+                    }
+                    // Prefer mapping by index (deterministic) and fall back to the echoed id
+                    $key = isset($cItem['index']) && isset($idByIndex[(string)$cItem['index']])
+                        ? $idByIndex[(string)$cItem['index']]
+                        : ($cItem['id'] ?? null);
+                    $sent = strtolower((string)($cItem['sentiment'] ?? 'neutral'));
+                    if (!in_array($sent, ['positive', 'negative', 'neutral'])) {
+                        $sent = 'neutral';
+                    }
+                    $score = floatval($cItem['sentiment_score'] ?? 0.8);
+                    if ($score <= 0 || $score > 1.0) $score = 0.85;
 
-                        $isRelevant = isset($cItem['is_relevant']) ? (bool)$cItem['is_relevant'] : true;
+                    $isRelevant = isset($cItem['is_relevant']) ? filter_var($cItem['is_relevant'], FILTER_VALIDATE_BOOLEAN) : true;
 
-                        if ($key !== null) {
-                            $results[(string)$key] = [
-                                'is_relevant' => $isRelevant,
-                                'sentiment' => $sent,
-                                'sentiment_score' => $score,
-                                'reason' => (string)($cItem['reason'] ?? ''),
-                            ];
-                        }
+                    if ($key !== null) {
+                        $results[(string)$key] = [
+                            'is_relevant' => $isRelevant,
+                            'sentiment' => $sent,
+                            'sentiment_score' => $score,
+                            'reason' => (string)($cItem['reason'] ?? ''),
+                        ];
                     }
                 }
             }

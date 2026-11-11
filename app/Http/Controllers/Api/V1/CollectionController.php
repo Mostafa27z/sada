@@ -235,6 +235,18 @@ class CollectionController extends Controller
                 $data['date_to']
             );
             $collection->update($data);
+
+            if (array_key_exists('sentiment_rubric', $data)) {
+                try {
+                    app(\App\Services\AiScraperService::class)->reanalyzeCollectionData(
+                        $collection->fresh(),
+                        $collection->getEffectiveRubric()
+                    );
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Collection rubric re-analysis warning: ' . $e->getMessage());
+                }
+            }
+
             return $this->success(new CollectionResource($collection->fresh(['articles.comments'])), __('messages.updated'));
         }
 
@@ -292,9 +304,14 @@ class CollectionController extends Controller
         $platforms = array_values(array_filter(array_map('trim', (array)$rawPlats)));
 
         $platformLimits = $collection->platform_limits ?: ($data['platform_limits'] ?? null);
-        $limit = intval($collection->comments_limit ?: ($data['comments_limit'] ?? 50));
-        if ($limit <= 0) {
-            $limit = 50;
+        $rawLim = $collection->comments_limit ?: ($data['comments_limit'] ?? 50);
+        if (is_string($rawLim) && in_array(mb_strtolower(trim($rawLim)), ['all', 'الكل', 'كل التعليقات', 'unlimited'], true)) {
+            $limit = 500;
+        } else {
+            $limit = intval($rawLim);
+            if ($limit <= 0) {
+                $limit = 50;
+            }
         }
 
         \App\Jobs\ScrapeKeywordsJob::dispatch(
@@ -334,7 +351,7 @@ class CollectionController extends Controller
                 'content' => $collection->description ?: $collection->name,
                 'summary' => $collection->name,
                 'country' => $collection->country ?: 'SA',
-                'sentiment' => 'positive',
+                'sentiment' => 'neutral',
                 'published_at' => now(),
                 'raw_data' => [
                     'platform' => $collection->platform ?: 'web',
@@ -507,7 +524,12 @@ class CollectionController extends Controller
         }
         // Case C: Standard comments_limit or default
         else {
-            $rawCommentsLimit = (int) ($data['comments_limit'] ?? 50);
+            $rawLimInput = $data['comments_limit'] ?? 50;
+            if (is_string($rawLimInput) && in_array(mb_strtolower(trim($rawLimInput)), ['all', 'الكل', 'كل التعليقات', 'unlimited'], true)) {
+                $rawCommentsLimit = $maxPerCampaign;
+            } else {
+                $rawCommentsLimit = (int) $rawLimInput;
+            }
             $finalTotal = min($rawCommentsLimit > 0 ? $rawCommentsLimit : 50, $maxPerCampaign);
             $perPlat = max(1, intval(ceil($finalTotal / max(1, count($platforms)))));
             foreach ($platforms as $p) {
