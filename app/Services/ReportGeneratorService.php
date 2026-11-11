@@ -71,7 +71,7 @@ class ReportGeneratorService
                             return false;
                         }
                         $fullText = trim(($a->title ?? '') . "\n" . ($a->summary ?? '') . "\n" . ($a->content ?? ''));
-                        if ($aiScraper->isOutOfScopeForRubric($fullText, $keywordsArray, $effectiveRubric)) {
+                        if ($aiScraper->isOutOfScopeForRubric($fullText, (string) ($a->author ?? ''), $effectiveRubric, $keywordsArray)) {
                             return false;
                         }
                         $normFp = preg_replace('/https?:\/\/\S+/u', '', $fullText);

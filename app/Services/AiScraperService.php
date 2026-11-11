@@ -2855,7 +2855,7 @@ class AiScraperService
                     $seenFingerprints[$fpKey] = true;
                 }
 
-                $isOutOfScope = $isDup || $this->isOutOfScopeForRubric($fullText, $keywords, $effectiveRubric);
+                $isOutOfScope = $isDup || $this->isOutOfScopeForRubric($fullText, (string) ($article->author ?? ''), $effectiveRubric, $keywords);
                 $raw = $article->raw_data ?? [];
                 $raw['is_duplicate'] = $isDup;
 
