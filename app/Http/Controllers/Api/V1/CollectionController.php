@@ -417,8 +417,6 @@ class CollectionController extends Controller
      */
     public function reanalyze(int $id, \App\Services\AiScraperService $aiScraper)
     {
-        @set_time_limit(180);
-
         $collection = Collection::find($id);
         if (!$collection) {
             return $this->error(__('messages.not_found'), 404);
@@ -433,11 +431,18 @@ class CollectionController extends Controller
             $rubric['topic_context'] = $tenant->name;
         }
 
-        $aiScraper->reanalyzeCollectionData($collection, $rubric);
+        // Mark as pending to notify UI polling
+        $collection->update([
+            'status' => Collection::STATUS_PENDING,
+            'error_message' => null,
+        ]);
+
+        // Dispatch background job to prevent 504 Gateway Timeout on web proxies (Hostinger/Nginx 60s limit)
+        \App\Jobs\ReanalyzeCollectionJob::dispatch($collection->id, $rubric);
 
         return $this->success(
             new CollectionResource($collection->fresh(['articles.comments'])),
-            'تمت إعادة تحليل جميع المنشورات والتعليقات في الحملة وفق أحدث معايير الذكاء الاصطناعي.'
+            'تم بدء إعادة التحليل بنجاح وجارٍ تحديث المنشورات والتعليقات بالذكاء الاصطناعي في الخلفية.'
         );
     }
 
