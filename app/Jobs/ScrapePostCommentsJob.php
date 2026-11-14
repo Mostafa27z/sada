@@ -48,6 +48,15 @@ class ScrapePostCommentsJob implements ShouldQueue
             $rubric = $tenant->getSentimentRubric();
         }
 
+        // Always anchor the monitored entity context to the tenant name if not explicitly set
+        $rubric = is_array($rubric) ? $rubric : [];
+        if (empty($rubric['preferred_side']) && !empty($tenant->name)) {
+            $rubric['preferred_side'] = $tenant->name;
+        }
+        if (empty($rubric['topic_context']) && !empty($tenant->name)) {
+            $rubric['topic_context'] = $tenant->name;
+        }
+
         $result = $aiService->scrapePostComments($this->urlsByPlatform, $this->commentsLimit, $rubric);
 
         if (($result['status'] ?? '') !== 'success') {
@@ -99,19 +108,14 @@ class ScrapePostCommentsJob implements ShouldQueue
                 if (!empty($result['post_metadata']['author_name']) && empty($article->author)) {
                     $article->author = $result['post_metadata']['author_name'];
                 }
-                // Update article sentiment to reflect either the post text stance or the dominant comment sentiment
-                $dist = $result['analytics']['sentiment_distribution'] ?? [];
-                if (!empty($dist)) {
-                    $posPct = (int) ($dist['positive'] ?? 0);
-                    $negPct = (int) ($dist['negative'] ?? 0);
-                    $neuPct = (int) ($dist['neutral'] ?? 0);
-                    if ($negPct > $posPct && $negPct >= $neuPct) {
-                        $article->sentiment = 'negative';
-                    } elseif ($posPct > $negPct && $posPct >= $neuPct) {
-                        $article->sentiment = 'positive';
-                    } else {
-                        $article->sentiment = 'neutral';
-                    }
+                // Determine article sentiment solely from the post text itself (not overridden by comments)
+                $fullPostText = trim(($postText ?: '') . "\n" . ($article->content ?: '') . "\n" . ($article->title ?? ''));
+                if (!empty($fullPostText) && !str_starts_with($fullPostText, 'http')) {
+                    $aiService = app(\App\Services\AiScraperService::class);
+                    $classifiedPost = $aiService->classifyArabicSentiment($fullPostText, $rubric);
+                    $article->sentiment = $classifiedPost['sentiment'] ?? 'neutral';
+                    $article->sentiment_score = $classifiedPost['score'] ?? null;
+                    $raw['sentiment_reason'] = $classifiedPost['reason'] ?? null;
                 }
                 $article->raw_data = $raw;
                 $article->save();

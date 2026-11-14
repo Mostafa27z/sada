@@ -95,6 +95,21 @@ class KeywordRelevanceFilter
     }
 
     /**
+     * Check if a phrase is composed entirely of generic words (e.g. "مركز صحي", "مستشفى عام").
+     */
+    public static function isAllGenericWords(string $phrase): bool
+    {
+        $words = array_values(array_filter(explode(' ', self::normalize($phrase))));
+        if (empty($words)) return true;
+        foreach ($words as $w) {
+            if (!self::isGenericToken($w)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Extract validation anchors from a keyword string.
      * Returns multi-word distinct phrases and required pairs.
      */
@@ -240,6 +255,9 @@ class KeywordRelevanceFilter
             if (count($words) === 1 && self::isCommonRegion($p)) {
                 continue;
             }
+            if (self::isAllGenericWords($p)) {
+                continue;
+            }
             if (mb_strlen(self::normalize($p)) >= 3 && !self::isGenericToken($p)) {
                 $cleanPhrases[] = $p;
             }
@@ -307,24 +325,27 @@ class KeywordRelevanceFilter
         $orgs = [];
         $clean = trim($text);
 
-        // Pattern 1: "[مجمع|تجمع|مركز|مستشفى|مديرية|صحة|قطاع] [Name] [الصحي/الطبية/العام]?"
-        if (preg_match('/(?:مجمع|تجمع|مركز|مستشفى|مديرية|صحة|قطاع)\s+([\p{L}]+)(?:\s+(?:الصحي|الطبي|العام))?/u', $clean, $om)) {
+        // Pattern 1: "[مجمع|تجمع|مركز|مستشفى|مديرية|صحة|قطاع] (صحي|طبي)? [Name] [الصحي/الطبية/العام]?"
+        if (preg_match('/(?:مجمع|تجمع|مركز|مستشفى|مديرية|صحة|قطاع)(?:\s+(?:صحي|طبي|الصحية|الطبية))?\s+([\p{L}]+)(?:\s+(?:الصحي|الطبي|العام))?/u', $clean, $om)) {
             $matched = trim($om[0]);
             $cityOrName = trim($om[1]);
-            $orgs[] = $matched;
-            if (str_starts_with($matched, 'مجمع')) {
-                $orgs[] = preg_replace('/^مجمع/u', 'تجمع', $matched);
-            } elseif (str_starts_with($matched, 'تجمع')) {
-                $orgs[] = preg_replace('/^تجمع/u', 'مجمع', $matched);
-            }
 
             if (!self::isGenericToken($cityOrName)) {
+                $orgs[] = $matched;
+                if (str_starts_with($matched, 'مجمع')) {
+                    $orgs[] = preg_replace('/^مجمع/u', 'تجمع', $matched);
+                } elseif (str_starts_with($matched, 'تجمع')) {
+                    $orgs[] = preg_replace('/^تجمع/u', 'مجمع', $matched);
+                }
+
                 $orgs[] = "تجمع {$cityOrName} الصحي";
                 $orgs[] = "مجمع {$cityOrName} الصحي";
                 $orgs[] = "تجمع {$cityOrName} الطبي";
                 $orgs[] = "مجمع {$cityOrName} الطبي";
                 $orgs[] = "تجمع {$cityOrName}";
                 $orgs[] = "مجمع {$cityOrName}";
+                $orgs[] = "مركز {$cityOrName}";
+                $orgs[] = "مركز صحي {$cityOrName}";
                 $orgs[] = "{$cityOrName} الصحي";
                 $orgs[] = "{$cityOrName} الطبي";
                 if (!self::isCommonRegion($cityOrName)) {
@@ -400,8 +421,14 @@ class KeywordRelevanceFilter
                 $kwQueries[] = "@Clustertabuk";
                 $kwQueries[] = "\"تجمع تبوك\" (شكوى OR شكاوى OR طوارئ OR تأخير OR إهمال OR مواعيد OR معاناة OR مشاكل OR سيء OR ردوا)";
             } elseif ($wordCount >= 2) {
-                $firstTwo = implode(' ', array_slice(array_filter(explode(' ', $cleanKw)), 0, 2));
-                $kwQueries[] = "\"{$firstTwo}\" (شكوى OR شكاوى OR تأخير OR إهمال OR مواعيد OR معاناة OR مشاكل OR سيء)";
+                if (!self::isAllGenericWords($cleanKw)) {
+                    $firstTwo = implode(' ', array_slice(array_filter(explode(' ', $cleanKw)), 0, 2));
+                    if (!self::isAllGenericWords($firstTwo)) {
+                        $kwQueries[] = "\"{$firstTwo}\" (شكوى OR شكاوى OR تأخير OR إهمال OR مواعيد OR معاناة OR مشاكل OR سيء)";
+                    } else {
+                        $kwQueries[] = "\"{$cleanKw}\" (شكوى OR شكاوى OR تأخير OR إهمال OR مواعيد OR معاناة OR مشاكل OR سيء)";
+                    }
+                }
             }
 
             $queriesByKeyword[] = array_values(array_unique(array_filter($kwQueries)));

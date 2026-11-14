@@ -228,4 +228,37 @@ class ArticleController extends Controller
             'Sentiment re-analyzed successfully against specified rubric.'
         );
     }
+
+    /**
+     * Manually override sentiment for an article/keyword post.
+     */
+    public function updateSentiment(Request $request, int $id)
+    {
+        $validated = $request->validate([
+            'sentiment' => ['required', 'in:positive,neutral,negative'],
+        ]);
+
+        $article = Article::find($id);
+        if (!$article) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        $sentiment = $validated['sentiment'];
+        $raw = $article->raw_data ?? [];
+        $raw['sentiment_reason'] = 'تم ضبط وتصنيف المشاعر يدوياً بواسطة إدارة المنشأة';
+        $raw['manual_override'] = true;
+
+        $article->update([
+            'sentiment' => $sentiment,
+            'sentiment_score' => 1.0,
+            'raw_data' => $raw,
+        ]);
+
+        return $this->success([
+            'id' => $article->id,
+            'sentiment' => $article->sentiment,
+            'sentiment_score' => $article->sentiment_score,
+            'sentiment_reason' => $raw['sentiment_reason'],
+        ], 'تم تحديث التصنيف يدوياً بنجاح.');
+    }
 }

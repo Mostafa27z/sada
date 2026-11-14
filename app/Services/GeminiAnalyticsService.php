@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -11,12 +12,14 @@ class GeminiAnalyticsService
     protected string $apiUrl = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
     protected string $model = 'gemini-flash-lite-latest';
     protected array $fallbackModels = [
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
         'gemini-flash-lite-latest',
-        'gemini-3.8-flash',
         'gemini-flash-latest',
+        'gemini-3.8-flash',
         'gemini-3.5-flash-lite',
         'gemini-3.5-flash',
-        'gemini-2.5-flash-lite',
+        'gemini-2.0-flash',
     ];
 
     public function __construct()
@@ -37,7 +40,7 @@ class GeminiAnalyticsService
     }
 
     /**
-     * Call Gemini with multi-model fallback in case of 503 capacity or 429 rate limit errors.
+     * Call Gemini with multi-model fallback and circuit-breaker cooldowns for overloaded/timing-out models.
      */
     protected function callGemini(array $messages, int $timeout = 120, array $responseFormat = ['type' => 'json_object'], ?string $preferredModel = null): ?string
     {
@@ -46,7 +49,21 @@ class GeminiAnalyticsService
             return null;
         }
 
-        $modelsToTry = array_unique(array_filter(array_merge([$preferredModel, $this->model], $this->fallbackModels)));
+        $lastWorking = Cache::get('gemini_last_working_model');
+        $allModels = array_values(array_unique(array_filter(array_merge(
+            [$lastWorking, $preferredModel, $this->model],
+            $this->fallbackModels
+        ))));
+
+        // Skip models currently in cooldown (503 / 429 / timeout) unless all models are in cooldown
+        $healthyModels = array_values(array_filter(
+            $allModels,
+            fn (string $m) => !Cache::has("gemini_model_cooldown:{$m}")
+        ));
+        $modelsToTry = !empty($healthyModels) ? $healthyModels : $allModels;
+
+        // Cap per-model attempt timeout so one hanging model never blocks the queue worker for minutes
+        $attemptTimeout = min(max($timeout, 15), 45);
 
         foreach ($modelsToTry as $candidateModel) {
             $payload = [
@@ -60,9 +77,11 @@ class GeminiAnalyticsService
                     ->withHeaders([
                         'Authorization' => "Bearer {$this->apiKey}",
                         'Content-Type' => 'application/json',
-                    ])->timeout($timeout)->post($this->apiUrl, $payload);
+                    ])->timeout($attemptTimeout)->post($this->apiUrl, $payload);
 
                 if ($response->successful()) {
+                    Cache::put('gemini_last_working_model', $candidateModel, now()->addMinutes(15));
+                    Cache::forget("gemini_model_cooldown:{$candidateModel}");
                     $content = $response->json('choices.0.message.content', '{}');
                     return trim(preg_replace('/^```(?:json)?\s*|\s*```$/iu', '', trim($content)));
                 }
@@ -72,10 +91,17 @@ class GeminiAnalyticsService
                     'body' => $response->body(),
                 ]);
 
+                if (in_array($status, [404, 400], true)) {
+                    Cache::put("gemini_model_cooldown:{$candidateModel}", true, now()->addMinutes(60));
+                } elseif (in_array($status, [429, 500, 502, 503, 504], true)) {
+                    Cache::put("gemini_model_cooldown:{$candidateModel}", true, now()->addMinutes(5));
+                }
+
                 // Always try next model on any non-successful HTTP status
                 continue;
             } catch (\Exception $e) {
                 Log::warning("Gemini model {$candidateModel} failed with exception: " . $e->getMessage());
+                Cache::put("gemini_model_cooldown:{$candidateModel}", true, now()->addMinutes(5));
                 continue;
             }
         }
@@ -102,7 +128,7 @@ class GeminiAnalyticsService
         return Http::withOptions([
             'curl' => $curlOptions,
             'verify' => false,
-            'connect_timeout' => 30,
+            'connect_timeout' => 10,
         ]);
     }
 
@@ -294,8 +320,11 @@ PROMPT;
      * Accurately classify sentiment (positive, negative, neutral) for individual posts,
      * with support for custom stance/rubric rules.
      */
-    public function classifyPostsSentiment(array $posts, ?array $rubric = null, ?array $keywords = null, ?string $postContext = null): array
+    public function classifyPostsSentiment(array $posts, ?array $rubric = null, array|string|null $keywords = null, ?string $postContext = null): array
     {
+        if (is_string($keywords)) {
+            $keywords = array_values(array_filter(array_map('trim', explode(',', $keywords))));
+        }
         if (empty($posts) || empty($this->apiKey)) {
             return [];
         }
@@ -351,23 +380,50 @@ REL;
 
         $contextChunk = "";
         if (!empty($postContext)) {
-            $contextChunk = "\n📌 المنشور الأصلي الذي كُتبت هذه التعليقات رداً عليه (استخدمه لفهم المقصود من التعليقات القصيرة والردود، وليس لتصنيفه):\n\""
+            $contextChunk = "\n📌 المنشور الأصلي الذي كُتبت هذه التعليقات رداً عليه (استخدمه لفهم المقصود من التعليقات والردود وهل التعليق موجّه للجهة المستهدفة أم رداً على كاتب المنشور، وليس لتصنيف المنشور الأصلي):\n\""
                 . mb_substr(trim(preg_replace('/\s+/', ' ', $postContext)), 0, 800) . "\"\n";
         }
 
+        $replyContextRules = <<<REPLY_RULES
+⚠️ الإطار الاستراتيجي الموحّد لتحليل المواقف والمشاعر (Universal 360° Brand-First Stance Framework):
+تذكّر دائماً: التصنيف هنا **من منظور مصلحة وسمعة الكيان أو المنشأة المستهدفة بالرصد حصراً** (سواء كانت شركة تجارية، بنك، جهة حكومية، جهة صحية، علامة تجارية، أو شخصية قيادية)، وليس تحليلاً لغوياً سطحياً!
+المعيار الحاسم: «هل هذا المحتوى يخدم سمعة ومصلحة الكيان المستهدف بالرصد أم يضر به؟»
+
+📌 القواعد العالمية الحاكمة لتصنيف التعليقات والردود:
+
+1. إذا كان المنشور الأصلي (أو سياق النقاش) يحتوي على شكوى أو نقد أو هجوم أو استياء ضد الكيان المستهدف:
+   أ. [تأييد الشاكي والتحفيز ضداً للكيان = "negative" حتماً]:
+      - أي تعليق يدعم صاحب الشكوى أو يشجعه أو يحفزه أو يوافقه (مثل: «استمر»، «كفو»، «بيض الله وجهك»، «معاك حق»، «الله يقويك»، «لا تسكت عن حقك»، «صادق»، «نفس المعاناة عندي»، «شركة فاشلة»، «كلهم كذا»، «افضحهم») يُعد **سلبياً ("negative")** قطعاً للمنشأة المستهدفة، لأن تشجيع الناقد وتأكيد الشكوى يمثّل تصعيداً للهجوم والضرر بالسمعة.
+      - ⛔ تنبيه حاسم: حتى لو كانت الكلمة تحفيزية لغوياً (مثل: "استمر" أو "كفو" أو "بطل")، طالما أن المعلق يدعم الناقد ضد المنشأة، فالتصنيف هو **"negative"** حتماً وممنوع وضع positive!
+   ب. [مهاجمة الشاكي وتكذيبه أو الدفاع عن الكيان = "positive" حتماً]:
+      - أي تعليق يهاجم صاحب المنشور نفسه أو يكذّبه أو يوبّخه أو يسفّه ادعاءه أو يدافع عن الكيان ويوضح أنظمته ولوائحه وساعات عمله الرسمية وجودة خدماته (مثل: «كذاب»، «مفتري»، «غير صحيح»، «انت غلطان»، «هدفك التشهير والتضليل»، «الخدمة ممتازة وتجربتي معهم رائعة»، «النظام واضح وانت متجاوزه») يُعد **إيجابياً ("positive")** لصالح الكيان، لأن تفنيد الشكوى وإسقاط مصداقية المهاجم يصب مباشرة في مصلحة الكيان وحماية سمعته.
+      - ⛔ تنبيه حاسم: إذا كان التعليق يهاجم أو يكذّب صاحب الشكوى ("يا كذاب"، "مفتري")، فالألفاظ الحادة هنا موجّهة ضد المهاجم لا ضد الكيان، فتُصنف **"positive"** للكيان!
+   ج. [تهدئة التشهير والتوجيه للقنوات الرسمية = "positive"]:
+      - أي رد ينصح بعدم التشهير العلني والتوجه لخدمة العملاء أو الدعم الفني أو القنوات الرسمية التابعة للجهة (بدل النشر في وسائل التواصل) يُعد **إيجابياً ("positive")** لصالح الكيان.
+
+2. إذا كان المنشور الأصلي مادحاً أو إيجابياً أو إعلاناً رسمياً للكيان المستهدف:
+   أ. الإشادة والشكر والدعم والتأييد = "positive".
+   ب. التشكيك أو التذمر أو إثارة الشكاوى والمطالبات في الردود (مثل: «ردوا علي بالخاص»، «دعاية كاذبة»، «نصابين») = "negative".
+
+3. التعليقات المحايدة ("neutral"):
+   - تقتصر فقط على الاستفسارات الإجرائية أو المعرفية البحتة الخالية من أي مدح أو ذم أو اتخاذ موقف (مثل: «بكم السعر؟»، «وين موقعكم؟»، «هل الخدمة متاحة؟»).
+REPLY_RULES;
+
         if ($hasRubric) {
             $definitionsChunk = <<<DEFS
-المطلوب: لكل عنصر، حدّد أولاً is_relevant ثم صنّف الموقف (positive / negative / neutral) **وفق معيار العميل المخصص أعلاه حصراً**.
-- لا تستخدم أي تعريفات عامة تتعارض مع معيار العميل (مثل: "كل شكوى سلبية" أو "كل خبر تعيين إيجابي") إلا إذا سكت المعيار عن الحالة.
+المطلوب: لكل عنصر، حدّد أولاً is_relevant ثم صنّف الموقف (positive / negative / neutral) **وفق معيار العميل المخصص أعلاه حصراً مع مراعاة قواعد الردود التالية**.
+{$replyContextRules}
+- لا تستخدم أي تعريفات عامة تتعارض مع معيار العميل إلا إذا سكت المعيار عن الحالة.
 - الحكم بموقف الكاتب من الجهة وليس بنبرة ألفاظه.
-- اذكر في "reason" بجملة عربية قصيرة سبب التصنيف مستنداً إلى قاعدة من قواعد العميل.
+- اذكر في "reason" بجملة عربية قصيرة سبب التصنيف مستنداً إلى قاعدة من قواعد العميل أو موقف الكاتب من الجهة.
 DEFS;
         } else {
             $definitionsChunk = <<<DEFS
 المطلوب: فحص صلة المنشور أولاً، ثم تصنيف المشاعر والمواقف لكل عنصر بدقة وموضوعية إلى إحدى الحالات الثلاث (positive / negative / neutral) بناءً على أثر المحتوى على الشخص أو الكيان المستهدف بالرصد:
-1. "positive": إشادة، شكر، تشجيع، أو أخبار التكليف والتعيين والترقية وتولي المناصب القيادية (مثل: تكليف رئيساً تنفيذياً، تعيين، ترقية، نيل الثقة، فوز، تكريم، تدشين، إنجاز، نجاح، مباركة وتهنئة)، أو أي حدث يصب في مصلحة الكيان/الشخص المستهدف ويعكس ثقة أو تقديراً له.
-2. "negative": إعفاء/إقالة، إنهاء تكليف، شكوى، استياء، تشكيك، نقد، هجوم، تراجع، إهمال، تعثر خدمة، تأخير مواعيد، زحام طوارئ، أو عدم تجاوب وتواصل موجهة ضد الكيان/الشخص المستهدف. احرص على رصد أي شكوى أو تذمر أو انتقاد للخدمات كـ "negative" مع بيان السبب بدقة في حقل "reason".
-3. "neutral": معلومات روتينية مجردة أو استفسار إجرائي لا يحمل أي مكسب أو ترقية أو مدح أو ذم، أو أرقام تواصل ومواعيد دوام.
+1. "positive": إشادة، شكر، تشجيع، دفاع عن الجهة وتوضيح أوقات عملها وأنظمتها، توجيه الشاكي للقنوات الرسمية، تفنيد أو تكذيب ادعاء مسيء للجهة، أو أخبار التكليف والتعيين والترقية وتولي المناصب القيادية والإنجازات، أو أي موقف يصب في مصلحة الكيان المستهدف.
+2. "negative": إعفاء/إقالة، إنهاء تكليف، شكوى حقيقية أو استياء ضد خدمات الجهة، تشكيك، نقد، هجوم، تراجع، إهمال، تعثر خدمة، تأخير مواعيد، أو شتيمة موجهة ضد الكيان/الشخص المستهدف نفسه.
+3. "neutral": استفسار إجرائي بريء أو خبر وصفي مجرد لا يحمل أي مدح أو ذم أو دفاع أو هجوم.
+{$replyContextRules}
 DEFS;
         }
 
@@ -413,7 +469,10 @@ SYS;
 
             $classList = [];
             for ($attempt = 0; $attempt < 2 && empty($classList); $attempt++) {
-                $rawContent = $this->callGemini($messages, 90, $responseFormat, env('GEMINI_CLASSIFY_MODEL', 'gemini-flash-latest'));
+                $rawContent = $this->callGemini($messages, 45, $responseFormat, env('GEMINI_CLASSIFY_MODEL', 'gemini-flash-latest'));
+                if ($rawContent === null) {
+                    break;
+                }
                 if ($rawContent) {
                     $cleaned = preg_replace('/```json|```/', '', $rawContent);
                     $json = json_decode(trim($cleaned), true);
@@ -442,13 +501,90 @@ SYS;
                     if ($score <= 0 || $score > 1.0) $score = 0.85;
 
                     $isRelevant = isset($cItem['is_relevant']) ? filter_var($cItem['is_relevant'], FILTER_VALIDATE_BOOLEAN) : true;
+                    $reasonText = trim((string) ($cItem['reason'] ?? ''));
+
+                    // 1. Check if the reasoning explicitly indicates defense/support of the entity or refuting the complaint
+                    $defendsEntityMarkers = [
+                        'يدعم موقف الجهة', 'دعم موقف الجهة', 'دعم الجهة', 'دعم المنشأة', 'يدعم المنشأة',
+                        'دفاع عن الجهة', 'دفاعاً عن الجهة', 'دفاع عن المنشأة', 'دفاعاً عن المنشأة',
+                        'يدحض شكوى', 'دحض شكوى', 'تفنيد ادعاء', 'تفنيد شكوى', 'تفنيد اتهام', 'دحض ادعاء',
+                        'يبرر طبيعة عمل', 'تبرير طبيعة عمل', 'تبرير موقف الجهة', 'يبرر للجهة', 'يدافع عن الجهة', 'دفاعاً عن'
+                    ];
+                    $isExplicitlySupportingEntity = false;
+                    foreach ($defendsEntityMarkers as $dem) {
+                        if (mb_strpos($reasonText, $dem) !== false) {
+                            $isExplicitlySupportingEntity = true;
+                            break;
+                        }
+                    }
+
+                    // 2. Guard against misclassifying encouragement/support of a critic as positive:
+                    // Supporting, cheering or encouraging the critic/complainant is 100% NEGATIVE for the monitored entity.
+                    $isSupportingCritic = false;
+                    if (!$isExplicitlySupportingEntity) {
+                        $supportsCriticPhrases = [
+                            'دعم لصاحب', 'دعم كاتب', 'تحفيز لصاحب', 'تحفيز كاتب', 'تأييد لصاحب', 'تأييد كاتب',
+                            'تشجيع لصاحب', 'تشجيع كاتب', 'تضامن مع صاحب', 'تضامن مع كاتب', 'مساندة صاحب', 'مساندة كاتب',
+                            'دعم الشاكي', 'تأييد الشاكي', 'تشجيع الشاكي', 'مساندة الشاكي',
+                            'دعم الناقد', 'تأييد الناقد', 'تشجيع الناقد', 'مساندة الناقد',
+                            'دعم المشتكي', 'تأييد المشتكي', 'تشجيع المشتكي', 'مساندة المشتكي',
+                            'يخدم توجه الانتقاد', 'يخدم الانتقاد', 'دعم التوجه المعارض', 'موافقة لصاحب', 'موافقة الشاكي'
+                        ];
+                        foreach ($supportsCriticPhrases as $scp) {
+                            if (mb_strpos($reasonText, $scp) !== false) {
+                                $isSupportingCritic = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if ($isExplicitlySupportingEntity) {
+                        $sent = 'positive';
+                    } elseif ($isSupportingCritic) {
+                        $sent = 'negative';
+                    } elseif ($sent === 'negative' && $reasonText !== '') {
+                        // 2. Self-consistency guard ("Enemy of my enemy = Positive for monitored entity"):
+                        // If the comment is attacking/accusing/refuting the POSTER (not the entity) or defending/guiding, flip negative -> positive.
+                        $attacksPosterVerbs = [
+                            'اتهام', 'تكذيب', 'شتم', 'مهاجمة', 'هجوم على', 'توبيخ', 'انتقاد صاحب', 'انتقاد كاتب', 'الرد على صاحب', 'تفنيد ادعاء', 'التشكيك في', 'كذب'
+                        ];
+                        $defenseTopics = ['توضيح أوقات', 'ساعات الدوام', 'أوقات الدوام', 'القنوات الرسمية', 'دفاع عن', 'دفاعاً عن'];
+                        $mentionsPosterAttack = false;
+                        foreach ($attacksPosterVerbs as $apv) {
+                            if (mb_strpos($reasonText, $apv) !== false) {
+                                $mentionsPosterAttack = true;
+                                break;
+                            }
+                        }
+                        if (!$mentionsPosterAttack) {
+                            foreach ($defenseTopics as $dt) {
+                                if (mb_strpos($reasonText, $dt) !== false) {
+                                    $mentionsPosterAttack = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        $attacksEntityMarkers = ['الجهة', 'المنشأة', 'الشركة', 'التجمع', 'الوزارة', 'المستشفى', 'الخدمة'];
+                        $attacksEntityDirectly = false;
+                        foreach ($attacksEntityMarkers as $aem) {
+                            if (mb_strpos($reasonText, "ضد {$aem}") !== false || mb_strpos($reasonText, "مهاجمة {$aem}") !== false || mb_strpos($reasonText, "نقد {$aem}") !== false || mb_strpos($reasonText, "انتقاد {$aem}") !== false) {
+                                $attacksEntityDirectly = true;
+                                break;
+                            }
+                        }
+                        if ($mentionsPosterAttack && !$attacksEntityDirectly) {
+                            $sent = 'positive';
+                            $reasonText .= ' (موقف داعم للمنشأة عبر تفنيد/انتقاد صاحب المنشور)';
+                        }
+                    }
 
                     if ($key !== null) {
                         $results[(string)$key] = [
                             'is_relevant' => $isRelevant,
                             'sentiment' => $sent,
                             'sentiment_score' => $score,
-                            'reason' => (string)($cItem['reason'] ?? ''),
+                            'reason' => $reasonText,
                         ];
                     }
                 }

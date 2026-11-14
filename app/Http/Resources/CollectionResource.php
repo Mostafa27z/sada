@@ -42,7 +42,7 @@ class CollectionResource extends JsonResource
                     return false;
                 }
                 $fullText = trim(($a->title ?? '') . "\n" . ($a->summary ?? '') . "\n" . ($a->content ?? ''));
-                if ($aiScraper->isOutOfScopeForRubric($fullText, $keywordsArray, $effectiveRubric)) {
+                if ($aiScraper->isOutOfScopeForRubric($fullText, (string) ($a->author ?? ''), $effectiveRubric, $keywordsArray)) {
                     return false;
                 }
                 $normFp = preg_replace('/https?:\/\/\S+/u', '', $fullText);
@@ -86,11 +86,32 @@ class CollectionResource extends JsonResource
         $rawPlats = !empty($this->platform) ? explode(',', $this->platform) : [];
         $platformsList = array_values(array_filter(array_map('trim', $rawPlats)));
 
-        $repliesByParent = $allComments->whereNotNull('parent_id')->groupBy('parent_id');
-        $parentComments = $allComments->filter(fn($c) => empty($c->parent_id))->map(function ($parent) use ($repliesByParent) {
-            $childReplies = $repliesByParent->get($parent->id, collect())->sortBy('comment_created_at')->values();
-            $parent->setRelation('replies', $childReplies);
-            return $parent;
+        $commentsById = $allComments->keyBy('id');
+        $threadRoots = collect();
+        $repliesByRootId = [];
+
+        foreach ($allComments as $c) {
+            $curr = $c;
+            $visited = [$c->id => true];
+            while (!empty($curr->parent_id) && isset($commentsById[$curr->parent_id]) && !isset($visited[$curr->parent_id])) {
+                $curr = $commentsById[$curr->parent_id];
+                $visited[$curr->id] = true;
+            }
+
+            if ($curr->id === $c->id) {
+                $threadRoots->push($c);
+            } else {
+                $repliesByRootId[$curr->id][] = $c;
+            }
+        }
+
+        $parentComments = $threadRoots->map(function ($root) use ($repliesByRootId) {
+            $threadReplies = collect($repliesByRootId[$root->id] ?? [])
+                ->sortBy('comment_created_at')
+                ->values();
+            $root->setRelation('replies', $threadReplies);
+            $root->setAttribute('replies_count', $threadReplies->count());
+            return $root;
         })->values();
 
         $primaryArticle = $articles->first();

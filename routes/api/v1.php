@@ -269,6 +269,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/comments', [CommentController::class, 'index']);
         Route::post('/comments/scrape', [CommentController::class, 'scrape']);
         Route::post('/comments/ai-recommendation', [CommentController::class, 'generateAiRecommendation']);
+        Route::post('/comments/{id}/reanalyze-sentiment', [CommentController::class, 'reanalyzeSentiment']);
+        Route::patch('/comments/{id}/sentiment', [CommentController::class, 'updateSentiment']);
 
         // Complaints Module
         Route::get('/complaints', [ComplaintController::class, 'index']);
@@ -328,6 +330,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/articles', [ArticleController::class, 'index']);
         Route::get('/articles/{id}', [ArticleController::class, 'show']);
         Route::post('/articles/{id}/reanalyze-sentiment', [ArticleController::class, 'reanalyzeSentiment']);
+        Route::patch('/articles/{id}/sentiment', [ArticleController::class, 'updateSentiment']);
 
         // Collections Module
         Route::get('/collections', [CollectionController::class, 'index']);
@@ -336,6 +339,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::put('/collections/{id}', [CollectionController::class, 'update']);
         Route::delete('/collections/{id}', [CollectionController::class, 'destroy']);
         Route::post('/collections/{id}/sync', [CollectionController::class, 'sync']);
+        Route::post('/collections/{id}/reanalyze', [CollectionController::class, 'reanalyze']);
         Route::post('/collections/{id}/articles/{articleId}', [CollectionController::class, 'addArticle']);
         Route::delete('/collections/{id}/articles/{articleId}', [CollectionController::class, 'removeArticle']);
 

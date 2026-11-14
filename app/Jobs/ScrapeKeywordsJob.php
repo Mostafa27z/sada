@@ -22,17 +22,32 @@ class ScrapeKeywordsJob implements ShouldQueue
     public int $tries = 3;
     public int $timeout = 600;
 
+    public array $keywords;
+    public array $platforms;
+
     public function __construct(
         public int $tenantId,
-        public array $keywords,
-        public array $platforms = ['instagram', 'facebook', 'x', 'tiktok'],
+        array|string $keywords,
+        array|string|null $platforms = ['instagram', 'facebook', 'x', 'tiktok'],
         public ?string $country = null,
         public ?int $collectionId = null,
         public ?string $dateFrom = null,
         public ?string $dateTo = null,
         public int $limit = 50,
         public ?array $platformLimits = null
-    ) {}
+    ) {
+        if (is_string($keywords)) {
+            $keywords = array_values(array_filter(array_map('trim', explode(',', $keywords))));
+        }
+        $this->keywords = (array) $keywords;
+
+        if (empty($platforms)) {
+            $platforms = ['x', 'facebook', 'instagram', 'web'];
+        } elseif (is_string($platforms)) {
+            $platforms = array_values(array_filter(array_map('trim', explode(',', $platforms))));
+        }
+        $this->platforms = (array) $platforms;
+    }
 
     public function handle(AiScraperService $aiService): void
     {

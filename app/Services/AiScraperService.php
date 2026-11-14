@@ -499,12 +499,15 @@ class AiScraperService
             return "\"{$personShort}\"";
         }
 
-        // If specific org/entity phrases exist (<= 3 words)
+        // If specific org/entity phrases exist (<= 3 words and not purely generic words)
         if (!empty($anchors['phrases'])) {
-            $firstPhrase = $anchors['phrases'][0];
-            $words = explode(' ', $firstPhrase);
-            if (count($words) <= 3) {
-                return "\"{$firstPhrase}\"";
+            foreach ($anchors['phrases'] as $firstPhrase) {
+                if (!\App\Support\KeywordRelevanceFilter::isAllGenericWords($firstPhrase)) {
+                    $words = explode(' ', $firstPhrase);
+                    if (count($words) <= 3) {
+                        return "\"{$firstPhrase}\"";
+                    }
+                }
             }
         }
 
@@ -2071,49 +2074,59 @@ class AiScraperService
         }
 
         // 5. Batch AI Stance & Sentiment Classification via Gemini (using Tenant/Campaign Rubric + Parent Post Context)
+        $geminiMap = [];
         if ($this->geminiService && $this->geminiService->hasApiKey() && !empty($allComments)) {
             try {
                 $geminiMap = $this->geminiService->classifyPostsSentiment($allComments, $rubric, null, $postContext);
-                if (!empty($geminiMap)) {
-                    $sentimentCounts = ['positive' => 0, 'neutral' => 0, 'negative' => 0];
-                    $inScopeTotal = 0;
-
-                    foreach ($commentsByPlatform as $platKey => &$platComments) {
-                        foreach ($platComments as &$c) {
-                            $extId = (string) ($c['external_id'] ?? '');
-                            if ($extId !== '' && isset($geminiMap[$extId])) {
-                                $gem = $geminiMap[$extId];
-                                $sent = strtolower((string) ($gem['sentiment'] ?? 'neutral'));
-                                if (!in_array($sent, ['positive', 'negative', 'neutral'], true)) {
-                                    $sent = 'neutral';
-                                }
-                                $isRel = $gem['is_relevant'] ?? true;
-                                $c['sentiment'] = $sent;
-                                $c['sentiment_score'] = (float) ($gem['sentiment_score'] ?? 0.85);
-                                $c['sentiment_reason'] = $gem['reason'] ?? null;
-                                $c['out_of_scope'] = ($isRel === false);
-                                $c['raw_data']['sentiment'] = $sent;
-                                $c['raw_data']['sentiment_reason'] = $gem['reason'] ?? null;
-                                $c['raw_data']['out_of_scope'] = ($isRel === false);
-                            }
-
-                            if (empty($c['out_of_scope'])) {
-                                $sentimentCounts[$c['sentiment']] = ($sentimentCounts[$c['sentiment']] ?? 0) + 1;
-                                $inScopeTotal++;
-                            } else {
-                                $excludedOutOfScope++;
-                            }
-                        }
-                        unset($c);
-                    }
-                    unset($platComments);
-
-                    if ($inScopeTotal > 0) {
-                        $total = $inScopeTotal;
-                    }
-                }
             } catch (\Throwable $e) {
                 Log::warning('Gemini comment batch classification failed in scrapeViaApify: ' . $e->getMessage());
+            }
+        }
+
+        if (!empty($allComments)) {
+            $sentimentCounts = ['positive' => 0, 'neutral' => 0, 'negative' => 0];
+            $inScopeTotal = 0;
+
+            foreach ($commentsByPlatform as $platKey => &$platComments) {
+                foreach ($platComments as &$c) {
+                    $extId = (string) ($c['external_id'] ?? '');
+                    if ($extId !== '' && isset($geminiMap[$extId])) {
+                        $gem = $geminiMap[$extId];
+                        $sent = strtolower((string) ($gem['sentiment'] ?? 'neutral'));
+                        if (!in_array($sent, ['positive', 'negative', 'neutral'], true)) {
+                            $sent = 'neutral';
+                        }
+                        $isRel = $gem['is_relevant'] ?? true;
+                        $c['sentiment'] = $sent;
+                        $c['sentiment_score'] = (float) ($gem['sentiment_score'] ?? 0.85);
+                        $c['sentiment_reason'] = $gem['reason'] ?? null;
+                        $c['out_of_scope'] = ($isRel === false);
+                        $c['raw_data']['sentiment'] = $sent;
+                        $c['raw_data']['sentiment_reason'] = $gem['reason'] ?? null;
+                        $c['raw_data']['out_of_scope'] = ($isRel === false);
+                    } else {
+                        // Re-evaluate heuristic with full parent $postContext (which may have been extracted after comment rows)
+                        $heur = $this->classifyArabicSentiment((string) ($c['text'] ?? ''), $rubric, null, $postContext);
+                        $c['sentiment'] = $heur['sentiment'];
+                        $c['sentiment_score'] = $heur['score'];
+                        $c['sentiment_reason'] = $heur['reason'] ?? null;
+                        $c['raw_data']['sentiment'] = $heur['sentiment'];
+                        $c['raw_data']['sentiment_reason'] = $heur['reason'] ?? null;
+                    }
+
+                    if (empty($c['out_of_scope'])) {
+                        $sentimentCounts[$c['sentiment']] = ($sentimentCounts[$c['sentiment']] ?? 0) + 1;
+                        $inScopeTotal++;
+                    } else {
+                        $excludedOutOfScope++;
+                    }
+                }
+                unset($c);
+            }
+            unset($platComments);
+
+            if ($inScopeTotal > 0) {
+                $total = $inScopeTotal;
             }
         }
 
@@ -2199,7 +2212,27 @@ class AiScraperService
     /**
      * Intelligent Arabic sentiment analysis for comments and social posts.
      */
-    public function classifyArabicSentiment(string $text, ?array $rubric = null, ?array $keywords = null): array
+    protected function looksLikeComplaintOrAttack(?string $text): bool
+    {
+        if (empty($text)) {
+            return false;
+        }
+        $norm = ' ' . mb_strtolower(trim($text)) . ' ';
+        $markers = [
+            'شكوى', 'تجمع', 'المركز الصحي', 'المراكز الصحية', 'مقفل', 'مغلق', 'فاضي',
+            'ما فيه', 'مافي', 'لا يوجد', 'ما لقيت', 'وين ', 'تقصير', 'إهمال', 'اهمال',
+            'حسبي الله', 'حسبنا الله', 'برقية', 'ناشد', 'مناشدة', 'فشل', 'فاشل',
+            'فضيحة', 'كارثة', 'تسيب', 'سوء', 'طوارئ', 'انتظار', 'غياب', 'نقص',
+        ];
+        foreach ($markers as $m) {
+            if (str_contains($norm, $m)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function classifyArabicSentiment(string $text, ?array $rubric = null, ?array $keywords = null, ?string $postContext = null): array
     {
         $clean = trim($text);
         if (empty($clean)) {
@@ -2229,21 +2262,101 @@ class AiScraperService
             }
         }
 
-        // 0-B. Stance-Based Defense vs Narrative Complaint Heuristics (Public/Healthcare Service Monitoring)
-        // Defense of the entity: directing complainers to official channels (937), refuting closure rumors, or criticizing defamers
+        // 0-A. Pure Informational / Procedural Questions (Neutral unless paired with complaints/insults)
+        $isPureQuestion = (str_contains($clean, '؟') || str_contains($clean, '?') || preg_match('/^(?:متى|وين|أين|اين|كم\s+رقم|كيف\s+(?:أحجز|احجز|أتواصل|اتواصل)|هل\s+(?:يوجد|فيه|يفتح|يعمل))/u', $clean));
+        if ($isPureQuestion && !preg_match('/(سيء|سئ|فاشل|زفت|قرف|إهمال|اهمال|تقصير|ما\s*يردون|تأخير|انتظار\s*طويل|وين\s*(?:الرقابة|المسؤول|المدير)|كذاب|قذر|تشهير)/u', $normalized)) {
+            return [
+                'sentiment' => 'neutral',
+                'score' => 0.78,
+                'reason' => 'استفسار إجرائي أو معلوماتي محايد لا يحمل ذماً أو مدحاً',
+            ];
+        }
+
+        // 0-B. Explicit Complaints / Field Reporting of Negligence (Always Negative against the Entity across any industry)
+        $isExplicitComplaintOrReport = (bool) preg_match('/(?:تم\s+رفع\s+بلاغ|رفعت\s+بلاغ|رقم\s+البلاغ|بلاغ\s+برقم|بلاغ\s+تجاري|حماية\s+المستهلك|وزارة\s+التجارة|بلاغ\s+على\s*(?:937|٩٣٧|1900|١٩٠٠)|محاسبة\s+(?:المقصرين|المتسبب|المسؤولين)|مكافحة\s+الفساد|هيئة\s+الرقابة|نزاهة|نصب\s+واحتيال|نصابين|سرقة|تلاعب|سوء\s+(?:خدمة|معاملة|إدارة|ادارة)|خدمة\s+سيئة|تطبيق\s+فاشل|ما\s*يردون|لا\s+يوجد\s+(?:طبيب|دكتور|موظف|كادر|استقبال|أحد)|بدون\s+(?:طبيب|دكتور|موظف|كادر)|فاضي\s+ما\s*فيه|وين\s+(?:الرقابة|المسؤول|المدير)|وثقت\s+بالفيديو|توثيق\s+بالفيديو)/u', $normalized);
+        if ($isExplicitComplaintOrReport) {
+            return [
+                'sentiment' => 'negative',
+                'score' => 0.95,
+                'reason' => 'شكوى وبلاغ رسمي أو رصد ميداني لغياب الكوادر وإهمال الخدمة ومطالبة بالمحاسبة ضد المنشأة',
+            ];
+        }
+
+        // 0-C. Stance-Based Defense vs Narrative Complaint Heuristics (Universal Brand/Corporate Monitoring)
+        // 1) Constructive channel guidance / anti-escalation advice (directing to official customer care rather than public defamation)
+        $hasAdvisoryRedirect = (bool) preg_match('/(?:مالها\s*داعي|ما\s*لها\s*داعي|لا\s*تكتب\s*برقية|بدل\s*التشهير|(?:دق|اتصل|تواصل|ارفع|تقدم|راجع)\s+.{0,40}(?:خدمة\s*العملاء|الدعم\s*الفني|الرقم\s*الموحد|القنوات\s*الرسمية|الجهة\s*المختصة|التجمع\s*الصحي|937|٩٣٧|1900))/u', $normalized);
+        if ($hasAdvisoryRedirect && !$isExplicitComplaintOrReport) {
+            return [
+                'sentiment' => 'positive',
+                'score' => 0.90,
+                'reason' => 'توجيه بنّاء لخدمة العملاء والقنوات الرسمية وتهدئة التشهير يخدم مصلحة المنشأة',
+            ];
+        }
+
+        // 2) Negated negatives (e.g., "ما فيه تقصير", "لا يوجد إهمال", "مو مقصرين", "خدمتهم ممتازة") -> Positive defense
+        if (preg_match('/(?:ما\s*فيه|مافيه|ما\s*فيهم|لا\s*يوجد|بدون|غير|مو|مش)\s+(?:تقصير|قصور|إهمال|اهمال|مقصر|مقصرين|أخطاء|اخطاء|تأخير|نصب)/u', $normalized)) {
+            return [
+                'sentiment' => 'positive',
+                'score' => 0.88,
+                'reason' => 'نفي التقصير أو الإهمال يعكس إشادة ودفاعاً عن المنشأة وخدماتها',
+            ];
+        }
+
+        // 3) Explaining official working hours / corporate policies (positive defense against unfounded complaints)
+        $explainsHours = (bool) preg_match('/(?:شي\s*طبيعي|طبيعي\s+ما\s*تلاقي|دوام\s*(?:الفرع|المركز|المراكز|الشركة|المكتب)|دوامهم\s*من|ساعات\s*(?:الدوام|العمل)|وقت\s*الدوام|بعد\s*الدوام|خارج\s*(?:وقت|أوقات)\s*(?:الدوام|العمل)|المركز\s*المناوب|سياسة\s*الشركة|النظام\s*واضح)/u', $normalized);
+        $complainsDuringHours = (bool) preg_match('/(?:مقفل|مغلق|فاضي|ما\s*فيه\s*أحد|مافي\s*موظف)\s+(?:وقت|في\s*وقت|أثناء|اثناء)\s*الدوام/u', $normalized);
+        if ($explainsHours && !$complainsDuringHours) {
+            return [
+                'sentiment' => 'positive',
+                'score' => 0.90,
+                'reason' => 'توضيح للأنظمة وسياسات وأوقات العمل الرسمية وتفنيد للشكوى',
+            ];
+        }
+
+        // 4) Direct defense of the entity, praising staff/services, or refuting rumors/defamation across any entity
         $defensePatterns = [
-            '937', '٩٣٧', 'القنوات الرسمية', 'قنوات رسمية', 'بلاغ رسمي', 'ارفع بلاغ', 'تقدم بشكوى رسمية',
+            'خدمتهم ممتازة', 'خدمة ممتازة', 'تعامل راقي', 'تجربتي معهم ممتازة', 'ما قصروا', 'ماقصروا', 'جهودهم تذكر', 'جهود تشكر', 'كفو عليهم',
+            'القنوات الرسمية', 'قنوات رسمية', 'بلاغ رسمي', 'ارفع بلاغ', 'تواصل مع الدعم',
             'تشهير', 'يشهر', 'تبي تشهر', 'هدفك التشهير', 'بدون دليل', 'غير صحيح', 'كلام غير صحيح',
-            'الأنوار مضاءة', 'الانوار مضاءة', 'المركز مفتوح', 'مفتوح الآن', 'شغالين', 'على رأس العمل',
-            'يداومون', 'موجودين', 'ما قصروا', 'ماقصروا', 'جهودهم تذكر', 'جهود تشكر', 'كفو عليهم',
+            'الحريص على وطنه', 'ما يستخدم هذا الأسلوب', 'ما يستخدم هذا الاسلوب', 'ما يستخدم هالاسلوب',
+            'كلام فاضي', 'تأليف', 'افتراء', 'مفتري', 'تكذبون', 'تضليل', 'شغالين', 'على رأس العمل', 'موجودين',
         ];
         foreach ($defensePatterns as $dp) {
             if (str_contains($normalized, mb_strtolower($dp))) {
                 return [
                     'sentiment' => 'positive',
                     'score' => 0.90,
-                    'reason' => 'دفاع عن المنشأة أو توجيه للقنوات الرسمية أو نفي للإشاعات يخدم سمعة الجهة',
+                    'reason' => 'دفاع عن المنشأة أو نفي للإشاعات يخدم سمعة الجهة',
                 ];
+            }
+        }
+
+        // 5) Parent-Post Context Stance (for replies on a complaint/attack post)
+        if ($this->looksLikeComplaintOrAttack($postContext)) {
+            $refuteAccuserTerms = ['كذاب', 'كاذب', 'تكذب', 'يكذب', 'قذر', 'وسخ', 'حقير', 'خسيس', 'كذب في كذب'];
+            foreach ($refuteAccuserTerms as $rat) {
+                if (str_contains($normalized, $rat)) {
+                    return [
+                        'sentiment' => 'positive',
+                        'score' => 0.88,
+                        'reason' => 'رد يهاجم أو يكذّب صاحب المنشور الشاكي دفاعاً عن المنشأة',
+                    ];
+                }
+            }
+
+            // Agreement with or encouragement of a complaint post (e.g., "استمر", "صدقت", "كفو", "نفس المعاناة") -> Negative
+            $agreeComplaintTerms = [
+                'صدقت', 'صادق', 'كلامك صحيح', 'نفس المعاناة', 'نفس الشي', 'حصل لي نفس', 'والله صحيح', 'اي والله', 'أي والله',
+                'استمر', 'واصل', 'كفو', 'بيض الله وجهك', 'الله يقويك', 'لا تسكت', 'لا تسكت عن حقك', 'معاك حق', 'معك حق', 'عاش', 'استمر يا بطل'
+            ];
+            foreach ($agreeComplaintTerms as $act) {
+                if (str_contains($normalized, $act)) {
+                    return [
+                        'sentiment' => 'negative',
+                        'score' => 0.90,
+                        'reason' => 'دعم وتحفيز لصاحب المنشور الناقد وتأكيد الشكوى ضد المنشأة',
+                    ];
+                }
             }
         }
 
@@ -2293,12 +2406,17 @@ class AiScraperService
         }
 
         // 3. Dismissal, Firing, Sanction, Outrage, Critique (Always Negative)
+        if (preg_match('/(?<!\p{L})احا+(?!\p{L})/u', $normalized)) {
+            return ['sentiment' => 'negative', 'score' => 0.90, 'reason' => 'لفظ استهجان واعتراض سلبي'];
+        }
+
         $negativeTerms = [
             'إعفاء', 'اعفاء', 'إقالة', 'اقالة', 'عزل', 'إنهاء تكليف', 'انهاء تكليف',
             'إلغاء تعيين', 'الغاء تعيين', 'سحب صلاحيات', 'طرد', 'استبعاد', 'استقيل',
-            'شكوى', 'شكاوى', 'تظلم', 'مخالفة', 'مخالفات', 'غرامة', 'عقوبة', 'تحقيق',
+            'شكوى', 'شكاوى', 'تظلم', 'مخالفة', 'مخالفات', 'غرامة', 'عقوبة',
+            'فتح تحقيق', 'إحالة للتحقيق', 'احالة للتحقيق', 'خضع للتحقيق',
             'غور', 'داهية', 'داهيه', 'ارحل', 'فاسد', 'فاسدة', 'فاسدين', 'الفاسدة',
-            'فاشل', 'فاشلة', 'فاشلين', 'الفاشلة', 'احا', 'احاا', 'احاااا', 'شلل',
+            'فاشل', 'فاشلة', 'فاشلين', 'الفاشلة', 'شلل',
             'تعبانين', 'تعبان', 'هباب', 'نكد', 'نكسة', 'نكسه', 'فضيحة', 'فضيحه',
             'استهتار', 'استفزاز', 'مستفز', 'مسخرة', 'مسخره', 'مهزلة', 'مهزله',
             'مهازل', 'حسبنا الله', 'حسبي الله', 'منك لله', 'الله ينتقم', 'نصابين',
@@ -2311,6 +2429,7 @@ class AiScraperService
             'إحباط', 'احباط', 'تراجع', 'سوء', 'اسوأ', 'أسوأ', 'تخبط', 'سخيف',
             'زبالة', 'زباله', 'حرام', 'نفاق', 'خسارة', 'خساره', 'ضعيف', 'هزيل',
             'مهمل', 'إهمال', 'اهمال', 'حقارة', 'وقاحة', 'وقاحه', 'أجلنا', 'اجلنا', 'قفاكم',
+            'كذاب', 'كاذب', 'تكذب', 'يكذب', 'قذر', 'وسخ', 'مفتري', 'حقير', 'خسيس',
         ];
         $negativeEmojis = ['😡', '🤬', '👎', '🤮', '💔', '🤦', '💩', '🤡', '👊', '😤', '😠', '🙄'];
 
@@ -2819,6 +2938,14 @@ class AiScraperService
     public function reanalyzeCollectionData(\App\Models\Collection $collection, ?array $rubric = null): void
     {
         $effectiveRubric = !empty($rubric) ? $rubric : $collection->getEffectiveRubric();
+        $effectiveRubric = is_array($effectiveRubric) ? $effectiveRubric : [];
+        $tenantName = $collection->tenant?->name;
+        if (empty($effectiveRubric['preferred_side']) && !empty($tenantName)) {
+            $effectiveRubric['preferred_side'] = $tenantName;
+        }
+        if (empty($effectiveRubric['topic_context']) && !empty($tenantName)) {
+            $effectiveRubric['topic_context'] = $tenantName;
+        }
         $isKeyword = empty($collection->link) || $collection->link === '#' || !empty($collection->keywords) || str_starts_with((string) $collection->name, 'رصد كلمة:') || str_starts_with((string) $collection->name, 'كلمة:');
 
         $keywords = [];
@@ -2855,7 +2982,7 @@ class AiScraperService
                     $seenFingerprints[$fpKey] = true;
                 }
 
-                $isOutOfScope = $isDup || $this->isOutOfScopeForRubric($fullText, $keywords, $effectiveRubric);
+                $isOutOfScope = $isDup || $this->isOutOfScopeForRubric($fullText, (string) ($article->author ?? ''), $effectiveRubric, $keywords);
                 $raw = $article->raw_data ?? [];
                 $raw['is_duplicate'] = $isDup;
 
@@ -2880,7 +3007,7 @@ class AiScraperService
                 $classified = $this->geminiService->classifyPostsSentiment(
                     $postsToClassify,
                     $effectiveRubric,
-                    !empty($keywords) ? implode(', ', $keywords) : null
+                    !empty($keywords) ? $keywords : null
                 );
 
                 foreach ($articles as $article) {
@@ -2932,7 +3059,7 @@ class AiScraperService
             $classifiedComments = $this->geminiService->classifyPostsSentiment(
                 $commentsPayload,
                 $effectiveRubric,
-                !empty($keywords) ? implode(', ', $keywords) : null,
+                !empty($keywords) ? $keywords : null,
                 $postContext !== '' ? $postContext : null
             );
 
@@ -2950,7 +3077,7 @@ class AiScraperService
                     $cReason = $cRes['reason'] ?? null;
                     $cOutOfScope = ($cRes['is_relevant'] ?? true) === false;
                 } else {
-                    $fb = $this->classifyArabicSentiment($comment->comment_text ?? '', $effectiveRubric, $keywords);
+                    $fb = $this->classifyArabicSentiment($comment->comment_text ?? '', $effectiveRubric, $keywords, $postContext !== '' ? $postContext : null);
                     $cSentiment = $fb['sentiment'];
                     $cScore = $fb['score'];
                     $cReason = $fb['reason'] ?? null;
@@ -2982,15 +3109,7 @@ class AiScraperService
             ]);
             $article->raw_data = $artRaw;
 
-            if (!$isKeyword && $inScopeTotal > 0) {
-                $dominant = 'neutral';
-                if ($sentimentCounts['positive'] > $sentimentCounts['negative'] && $sentimentCounts['positive'] >= $sentimentCounts['neutral']) {
-                    $dominant = 'positive';
-                } elseif ($sentimentCounts['negative'] > $sentimentCounts['positive'] && $sentimentCounts['negative'] >= $sentimentCounts['neutral']) {
-                    $dominant = 'negative';
-                }
-                $article->sentiment = $dominant;
-            }
+            // Note: Article sentiment is determined solely by the post text itself, NOT overridden by comments
             $article->save();
         }
     }

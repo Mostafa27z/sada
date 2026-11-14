@@ -385,8 +385,8 @@ class CollectionController extends Controller
             return $this->error(__('messages.not_found'), 404);
         }
 
-        // Prevent re-generating / re-syncing if analysis already completed or has scraped results
-        if ($collection->status === Collection::STATUS_COMPLETED || $collection->articles()->count() > 0) {
+        // Prevent re-generating / re-syncing if analysis already completed AND has scraped results
+        if ($collection->status === Collection::STATUS_COMPLETED && $collection->articles()->count() > 0) {
             return $this->error('تم إنجاز التحليل مسبقاً لهذه الحملة ولا يمكن إعادة التوليد لتجنب استهلاك الحصة. يمكنك إنشاء حملة جديدة ضمن حدود باقتك.', 403);
         }
 
@@ -409,6 +409,35 @@ class CollectionController extends Controller
         return $this->success(
             new CollectionResource($collection->fresh(['articles.comments'])),
             'تم بدء المزامنة بنجاح وجارٍ سحب وتحليل أحدث البيانات والردود بالذكاء الاصطناعي.'
+        );
+    }
+
+    /**
+     * Re-analyze all existing articles & comments inside an already-scraped collection (zero Apify quota cost).
+     */
+    public function reanalyze(int $id, \App\Services\AiScraperService $aiScraper)
+    {
+        @set_time_limit(180);
+
+        $collection = Collection::find($id);
+        if (!$collection) {
+            return $this->error(__('messages.not_found'), 404);
+        }
+
+        $tenant = \App\Support\TenantContext::getTenant();
+        $rubric = $collection->getEffectiveRubric() ?? [];
+        if (empty($rubric['preferred_side']) && !empty($tenant?->name)) {
+            $rubric['preferred_side'] = $tenant->name;
+        }
+        if (empty($rubric['topic_context']) && !empty($tenant?->name)) {
+            $rubric['topic_context'] = $tenant->name;
+        }
+
+        $aiScraper->reanalyzeCollectionData($collection, $rubric);
+
+        return $this->success(
+            new CollectionResource($collection->fresh(['articles.comments'])),
+            'تمت إعادة تحليل جميع المنشورات والتعليقات في الحملة وفق أحدث معايير الذكاء الاصطناعي.'
         );
     }
 

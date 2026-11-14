@@ -265,15 +265,46 @@ class ApifyScraperService
 
         $queryKeywords = array_values(array_unique(array_filter($queryKeywords)));
 
-        $input = [
-            "keywords" => array_slice($queryKeywords, 0, 10),
-            "maxItemsPerKeyword" => $maxItems,
-            "sortBy" => "latest",
-            "outputFormat" => "json",
-            "proxyConfiguration" => ["useApifyProxy" => false],
+        $searchTerms = [];
+        foreach ($keywords as $kw) {
+            $kw = trim($kw);
+            if (!empty($kw)) {
+                $searchTerms[] = $kw;
+            }
+        }
+        // If compound keywords exist (e.g. "الرابيه" and "تبوك"), combine them for targeted Twitter search
+        if (count($keywords) > 1) {
+            $nonGeneric = array_filter($keywords, fn($k) => !in_array(trim($k), ['تبوك', 'الرياض', 'جدة', 'الدمام', 'مكة', 'المدينة', 'السعودية']));
+            $regions = array_filter($keywords, fn($k) => in_array(trim($k), ['تبوك', 'الرياض', 'جدة', 'الدمام', 'مكة', 'المدينة', 'السعودية']));
+            foreach ($nonGeneric as $ng) {
+                foreach ($regions as $rg) {
+                    $searchTerms[] = trim($ng) . ' ' . trim($rg);
+                }
+            }
+        }
+        $searchTerms = array_values(array_unique(array_filter($searchTerms)));
+
+        $apidojoInput = [
+            "searchTerms" => array_slice($searchTerms, 0, 10),
+            "sort" => "Latest",
+            "maxItems" => max(15, $maxItems * 3),
         ];
 
-        $items = $this->runActorAndFetchItems("8CiMefkv2yLlD7vYl", $input);
+        // 1. Primary: Use high-speed reliable Apify Tweet Scraper
+        $items = $this->runActorAndFetchItems("apidojo~tweet-scraper", $apidojoInput);
+
+        // 2. Fallback: Secondary actor if primary returned no items
+        if (empty($items)) {
+            $input = [
+                "keywords" => array_slice($queryKeywords, 0, 10),
+                "maxItemsPerKeyword" => $maxItems,
+                "sortBy" => "latest",
+                "outputFormat" => "json",
+                "proxyConfiguration" => ["useApifyProxy" => true],
+            ];
+            $items = $this->runActorAndFetchItems("8CiMefkv2yLlD7vYl", $input);
+        }
+
         $results = [];
 
         $fromTs = $dateFrom ? strtotime($dateFrom . ' 00:00:00') : null;
@@ -281,12 +312,12 @@ class ApifyScraperService
 
         foreach ($items as $item) {
             $postId = (string)($item['id'] ?? $item['tweet_id'] ?? md5(json_encode($item)));
-            $username = $item['author_username'] ?? $item['username'] ?? 'x';
-            $author = $item['author_name'] ?? $item['username'] ?? '';
+            $username = $item['author']['userName'] ?? $item['author_username'] ?? $item['username'] ?? 'x';
+            $author = $item['author']['name'] ?? $item['author_name'] ?? $item['username'] ?? '';
             if (empty(trim($author)) || strtolower($author) === 'unknown' || strtolower($author) === 'unknown user') {
                 $author = !empty($username) && $username !== 'x' ? "@{$username}" : 'مغرد في X';
             }
-            $text = trim($item['text'] ?? '');
+            $text = trim($item['fullText'] ?? $item['text'] ?? '');
             if (empty($text) || mb_strlen($text) < 5 || strtolower($text) === 'unknown') {
                 continue; // Skip tweets without meaningful content
             }
@@ -296,8 +327,8 @@ class ApifyScraperService
                 continue;
             }
 
-            $rawCreatedAt = $item['created_at'] ?? $item['date'] ?? '';
-            $url = $item['url'] ?? $item['tweet_url'] ?? "https://x.com/{$username}/status/{$postId}";
+            $rawCreatedAt = $item['createdAt'] ?? $item['created_at'] ?? $item['date'] ?? '';
+            $url = $item['url'] ?? $item['twitterUrl'] ?? $item['tweet_url'] ?? "https://x.com/{$username}/status/{$postId}";
 
             $tsVal = $this->parseSocialTimestamp($rawCreatedAt);
             if ($tsVal) {
@@ -324,9 +355,9 @@ class ApifyScraperService
 
             // Extract genuine platform interaction metrics
             $views = (int) (
-                $item['views']
+                $item['viewCount']
+                ?? $item['views']
                 ?? $item['view_count']
-                ?? $item['viewCount']
                 ?? $item['views_count']
                 ?? $item['viewsCount']
                 ?? $item['impression_count']
@@ -335,9 +366,9 @@ class ApifyScraperService
             );
 
             $likes = (int) (
-                $item['likes']
+                $item['likeCount']
+                ?? $item['likes']
                 ?? $item['like_count']
-                ?? $item['likeCount']
                 ?? $item['likes_count']
                 ?? $item['likesCount']
                 ?? $item['favorite_count']
@@ -346,18 +377,18 @@ class ApifyScraperService
             );
 
             $retweets = (int) (
-                $item['retweets']
+                $item['retweetCount']
+                ?? $item['retweets']
                 ?? $item['retweet_count']
-                ?? $item['retweetCount']
                 ?? $item['reposts']
                 ?? $item['repost_count']
                 ?? ($item['public_metrics']['retweet_count'] ?? 0)
             );
 
             $replies = (int) (
-                $item['replies']
+                $item['replyCount']
+                ?? $item['replies']
                 ?? $item['reply_count']
-                ?? $item['replyCount']
                 ?? ($item['public_metrics']['reply_count'] ?? 0)
             );
 
