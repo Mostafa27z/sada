@@ -532,6 +532,9 @@ class ReportGeneratorService
         $kpi = $useCommentKpis ? $commentStats : $stats;
         $kpiTotalLabel = $useCommentKpis ? 'إجمالي التعليقات المرصودة' : 'إجمالي المنشورات المرصودة';
         $articlesCountLabel = is_countable($articles) ? count($articles) : 0;
+        $commentsCount = is_countable($data['comments'] ?? null) ? count($data['comments']) : 0;
+        $itemsCount = max($articlesCountLabel, $commentsCount);
+        $totalPages = max(1, 1 + ($itemsCount > 2 ? (int)ceil(($itemsCount - 2) / 7) : 0));
 
         $posPct = $kpi['total'] > 0 ? round(($kpi['positive'] / $kpi['total']) * 100) : 0;
         $neuPct = $kpi['total'] > 0 ? round(($kpi['neutral'] / $kpi['total']) * 100) : 0;
@@ -566,7 +569,7 @@ class ReportGeneratorService
             $num = $index + 1;
             $platform = htmlspecialchars($article->platform ?? 'عام', ENT_QUOTES, 'UTF-8');
             $author = htmlspecialchars($article->author ?? 'مجهول', ENT_QUOTES, 'UTF-8');
-            $snippet = htmlspecialchars(Str::limit($article->content ?? $article->title ?? '—', 85), ENT_QUOTES, 'UTF-8');
+            $snippet = htmlspecialchars(Str::limit($article->content ?? $article->title ?? '—', 350), ENT_QUOTES, 'UTF-8');
             $sentiment = $article->sentiment;
             $sColor = match ($sentiment) {
                 'positive' => '#15803d',
@@ -587,14 +590,14 @@ class ReportGeneratorService
 
             $tableRows .= "
                 <tr style='border-bottom: 1px solid #e5e7eb;'>
-                    <td style='padding: 8px 10px; font-weight: bold; color: #6b7280; text-align: center;'>{$num}</td>
-                    <td style='padding: 8px 10px; font-weight: bold; color: #111827;'>{$platform}</td>
-                    <td style='padding: 8px 10px; color: #4b5563;'>{$author}</td>
-                    <td style='padding: 8px 10px; color: #374151; font-size: 11px;'>{$snippet}</td>
-                    <td style='padding: 8px 10px; text-align: center;'>
-                        <span style='background: {$sBg}; color: {$sColor}; padding: 3px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;'>{$sLabel}</span>
+                    <td style='padding: 10px 10px; font-weight: bold; color: #6b7280; text-align: center; font-size: 12px;'>{$num}</td>
+                    <td style='padding: 10px 10px; font-weight: bold; color: #111827; font-size: 12px;'>{$platform}</td>
+                    <td style='padding: 10px 10px; color: #1e293b; font-weight: 700; font-size: 12px;'>{$author}</td>
+                    <td style='padding: 10px 10px; color: #111827; font-size: 12.5px; line-height: 1.65;'>{$snippet}</td>
+                    <td style='padding: 10px 10px; text-align: center;'>
+                        <span style='background: {$sBg}; color: {$sColor}; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800;'>{$sLabel}</span>
                     </td>
-                    <td style='padding: 8px 10px; color: #6b7280; font-size: 11px; text-align: center;'>{$date}</td>
+                    <td style='padding: 10px 10px; color: #6b7280; font-size: 11.5px; text-align: center;'>{$date}</td>
                 </tr>
             ";
         }
@@ -625,13 +628,13 @@ class ReportGeneratorService
 
             $commentRows .= "
                 <tr style='border-bottom: 1px solid #e5e7eb;'>
-                    <td style='padding: 8px 10px; font-weight: bold; color: #6b7280; text-align: center;'>{$cNum}</td>
-                    <td style='padding: 8px 10px; font-weight: bold; color: #1e40af;'>{$cAuthor}</td>
-                    <td style='padding: 8px 10px; color: #374151; font-size: 11px;'>{$cText}</td>
-                    <td style='padding: 8px 10px; text-align: center;'>
-                        <span style='background: {$csBg}; color: {$csColor}; padding: 3px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;'>{$csLabel}</span>
+                    <td style='padding: 10px 10px; font-weight: bold; color: #6b7280; text-align: center; font-size: 12px;'>{$cNum}</td>
+                    <td style='padding: 10px 10px; font-weight: 800; color: #1e40af; font-size: 12px;'>{$cAuthor}</td>
+                    <td style='padding: 10px 10px; color: #111827; font-size: 12.5px; line-height: 1.65;'>{$cText}</td>
+                    <td style='padding: 10px 10px; text-align: center;'>
+                        <span style='background: {$csBg}; color: {$csColor}; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800;'>{$csLabel}</span>
                     </td>
-                    <td style='padding: 8px 10px; color: #6b7280; font-size: 11px; text-align: center;'>{$cLikes} إعجاب</td>
+                    <td style='padding: 10px 10px; color: #6b7280; font-size: 11.5px; text-align: center; font-weight: 700;'>{$cLikes} إعجاب</td>
                 </tr>
             ";
         }
@@ -640,18 +643,18 @@ class ReportGeneratorService
         if ($comments->isNotEmpty()) {
             $commentsSection = "
             <div style='margin-top: 24px;'>
-                <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'>
-                    <h3 style='margin: 0; font-size: 13px; font-weight: 900; color: #111827;'>تحليل تفاعلات وتعليقات الجمهور المباشرة (Social Comments & Discussion)</h3>
-                    <span style='font-size: 10px; color: #6b7280;'>إجمالي التعليقات المرصودة: " . $comments->count() . "</span>
+                <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;'>
+                    <h3 style='margin: 0; font-size: 14.5px; font-weight: 900; color: #111827;'>تحليل تفاعلات وتعليقات الجمهور المباشرة (Social Comments & Discussion)</h3>
+                    <span style='font-size: 12px; color: #6b7280; font-weight: 700;'>إجمالي التعليقات المرصودة: " . $comments->count() . "</span>
                 </div>
                 <table>
                     <thead>
                         <tr>
-                            <th style='width: 35px;'>#</th>
-                            <th style='width: 120px;'>المعلق</th>
+                            <th style='width: 35px; text-align: center;'>#</th>
+                            <th style='width: 130px;'>المعلق</th>
                             <th>نص التعليق / التفاعل المرصود</th>
-                            <th style='width: 75px; text-align: center;'>المشاعر</th>
-                            <th style='width: 85px; text-align: center;'>التفاعل</th>
+                            <th style='width: 80px; text-align: center;'>المشاعر</th>
+                            <th style='width: 90px; text-align: center;'>التفاعل</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -674,29 +677,43 @@ class ReportGeneratorService
     <style>
         @page {
             size: A4;
-            margin: 12mm 15mm;
+            margin: 12mm 15mm 16mm 15mm;
+            @bottom-right {
+                content: "صفحة " counter(page) " من " counter(pages);
+                font-family: 'Cairo', sans-serif;
+                font-size: 10px;
+                color: #475569;
+                font-weight: 700;
+            }
+            @bottom-left {
+                content: "رقم التقرير: REF: SADA-{$report->id}";
+                font-family: 'Cairo', sans-serif;
+                font-size: 10px;
+                color: #0f766e;
+                font-weight: 700;
+            }
         }
         body {
             font-family: 'Cairo', system-ui, -apple-system, sans-serif;
             background: #ffffff;
-            color: #1f2937;
+            color: #0f172a;
             margin: 0;
             padding: 24px;
             direction: rtl;
-            font-size: 12px;
-            line-height: 1.5;
+            font-size: 13.5px;
+            line-height: 1.6;
         }
         .header-bar {
-            height: 4px;
+            height: 5px;
             background: linear-gradient(90deg, {$secondary}, {$primary});
-            border-radius: 2px;
+            border-radius: 4px;
             margin-bottom: 20px;
         }
         .kpi-card {
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
+            background: #f8fafc;
+            border: 1.5px solid #e2e8f0;
             border-radius: 12px;
-            padding: 12px 16px;
+            padding: 14px 16px;
             text-align: right;
         }
         .ai-box {
@@ -704,21 +721,22 @@ class ReportGeneratorService
             border: 1.5px solid {$secondary};
             box-shadow: 0 2px 10px rgba(0,0,0,0.03);
             border-radius: 14px;
-            padding: 16px 20px;
+            padding: 18px 22px;
             margin: 20px 0;
         }
         table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 15px;
-            font-size: 11px;
+            font-size: 12.5px;
         }
         th {
             background: {$primary};
             color: #ffffff;
-            padding: 10px;
+            padding: 11px 10px;
             text-align: right;
             font-weight: 800;
+            font-size: 12.5px;
         }
         th:first-child { border-top-right-radius: 8px; text-align: center; }
         th:last-child { border-top-left-radius: 8px; text-align: center; }
@@ -746,43 +764,56 @@ class ReportGeneratorService
     <div class="header-bar"></div>
 
     <!-- Document Header -->
-    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e5e7eb; padding-bottom: 16px; margin-bottom: 16px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 16px; margin-bottom: 18px;">
         <div style="display: flex; align-items: center; gap: 14px;">
             {$logoHtml}
             <div>
-                <h1 style="margin: 0; font-size: 18px; font-weight: 900; color: #111827;">{$report->name}</h1>
-                <p style="margin: 2px 0 0 0; font-size: 11px; color: #6b7280; font-weight: 600;">{$companyName} • وثيقة رسمية معتمدة</p>
+                <h1 style="margin: 0; font-size: 24px; font-weight: 900; color: #0f172a;">مرآة خفّاق</h1>
+                <p style="margin: 3px 0 0 0; font-size: 13px; color: #475569; font-weight: 700;">منصة الرصد والتحليل الإعلامي وإدارة السمعة وصوت المستفيد</p>
             </div>
         </div>
-        <div style="text-align: left; font-size: 10px; color: #6b7280; direction: ltr;">
-            <div style="font-weight: bold; color: {$primary};">REF: MIRAA-REP-{$report->id}</div>
-            <div>" . now()->format('Y-m-d H:i') . "</div>
+        <div style="text-align: left; font-size: 12px; color: #475569; direction: rtl;">
+            <div style="font-weight: 900; color: {$primary}; font-size: 13px;">رقم التقرير: <span dir="ltr">REF: SADA-{$report->id}</span></div>
+            <div style="margin-top: 3px; font-weight: 600;">تاريخ التقرير: " . now()->format('Y-m-d') . "</div>
+            <div style="margin-top: 3px; font-weight: 800; color: #1e293b;">رقم الصفحة: 1 من {$totalPages}</div>
+        </div>
+    </div>
+
+    <!-- Report Title & Monitored Entity Card -->
+    <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 14px; padding: 16px 20px; margin-bottom: 18px;">
+        <div style="font-size: 12px; font-weight: 800; color: {$primary}; margin-bottom: 4px;">عنوان التقرير:</div>
+        <h2 style="margin: 0; font-size: 22px; font-weight: 900; color: #0f172a; line-height: 1.4;">تقرير الرصد والتحليل الإعلامي</h2>
+        <div style="font-size: 15px; font-weight: 800; color: #1e293b; margin-top: 6px;">
+            الجهة محل الرصد : <span style="color: {$primary}; font-weight: 900;">{$companyName}</span>
+        </div>
+        <div style="margin-top: 8px; font-size: 12.5px; color: #64748b; font-weight: 600;">
+            نطاق التقرير: <strong style="color: #0f172a;">{$report->name}</strong>
         </div>
     </div>
 
     <!-- AI Executive Summary Card -->
     <div class="ai-box">
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
             <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="background: {$secondary}; color: #ffffff; font-size: 10px; font-weight: 900; padding: 2px 8px; border-radius: 6px;">AI Summary</span>
-                <span style="font-size: 13px; font-weight: 900; color: #111827;">الملخص التنفيذي الذكي لحالة الرصد</span>
+                <span style="background: {$secondary}; color: #ffffff; font-size: 11px; font-weight: 900; padding: 3px 9px; border-radius: 6px;">AI Summary</span>
+                <span style="font-size: 15px; font-weight: 900; color: #0f172a;">الملخص التنفيذي الذكي لحالة الرصد</span>
             </div>
-            <span style="font-size: 10px; font-weight: bold; color: {$primary};">تحليل فوري دقيق</span>
+            <span style="font-size: 11.5px; font-weight: bold; color: {$primary};">تحليل فوري دقيق</span>
         </div>
-        <p style="margin: 0 0 12px 0; font-size: 12px; color: #374151; line-height: 1.6;">
+        <p style="margin: 0 0 14px 0; font-size: 13.5px; color: #1e293b; line-height: 1.8; font-weight: 500;">
             {$aiSummary}
         </p>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; font-size: 11px;">
-            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 10px;">
-                <div style="font-weight: 800; color: #166534; margin-bottom: 4px;">أبرز الإيجابيات المرصودة:</div>
-                <ul style="margin: 0; padding-right: 14px; list-style: none;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; font-size: 12.5px;">
+            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-right: 4px solid #16a34a; border-radius: 8px; padding: 12px 14px;">
+                <div style="font-weight: 900; color: #14532d; margin-bottom: 6px; font-size: 13px;">أبرز الإيجابيات المرصودة:</div>
+                <ul style="margin: 0; padding-right: 14px; list-style: none; line-height: 1.7;">
                     {$insightsHtml}
                 </ul>
             </div>
-            <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px;">
-                <div style="font-weight: 800; color: #991b1b; margin-bottom: 4px;">ملاحظات ونقاط الاهتمام:</div>
-                <ul style="margin: 0; padding-right: 14px; list-style: none;">
+            <div style="background: #fef2f2; border: 1px solid #fecaca; border-right: 4px solid #dc2626; border-radius: 8px; padding: 12px 14px;">
+                <div style="font-weight: 900; color: #7f1d1d; margin-bottom: 6px; font-size: 13px;">ملاحظات ونقاط الاهتمام:</div>
+                <ul style="margin: 0; padding-right: 14px; list-style: none; line-height: 1.7;">
                     {$concernsHtml}
                 </ul>
             </div>
@@ -790,40 +821,40 @@ class ReportGeneratorService
     </div>
 
     <!-- KPI Statistics Grid -->
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px;">
         <div class="kpi-card">
-            <div style="font-size: 10px; color: #6b7280; font-weight: bold;">{$kpiTotalLabel}</div>
-            <div style="font-size: 20px; font-weight: 900; color: {$primary}; margin-top: 4px;">{$kpi['total']}</div>
+            <div style="font-size: 12px; color: #64748b; font-weight: 800;">{$kpiTotalLabel}</div>
+            <div style="font-size: 24px; font-weight: 900; color: {$primary}; margin-top: 4px;">{$kpi['total']}</div>
         </div>
         <div class="kpi-card">
-            <div style="font-size: 10px; color: #6b7280; font-weight: bold;">المشاعر الإيجابية</div>
-            <div style="font-size: 20px; font-weight: 900; color: #16a34a; margin-top: 4px;">{$posPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$kpi['positive']})</span></div>
+            <div style="font-size: 12px; color: #166534; font-weight: 800;">المشاعر الإيجابية</div>
+            <div style="font-size: 24px; font-weight: 900; color: #16a34a; margin-top: 4px;">{$posPct}% <span style="font-size: 12px; font-weight: 700; color: #166534;">({$kpi['positive']})</span></div>
         </div>
         <div class="kpi-card">
-            <div style="font-size: 10px; color: #6b7280; font-weight: bold;">المشاعر المحايدة</div>
-            <div style="font-size: 20px; font-weight: 900; color: #4b5563; margin-top: 4px;">{$neuPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$kpi['neutral']})</span></div>
+            <div style="font-size: 12px; color: #475569; font-weight: 800;">المشاعر المحايدة</div>
+            <div style="font-size: 24px; font-weight: 900; color: #334155; margin-top: 4px;">{$neuPct}% <span style="font-size: 12px; font-weight: 700; color: #475569;">({$kpi['neutral']})</span></div>
         </div>
         <div class="kpi-card">
-            <div style="font-size: 10px; color: #6b7280; font-weight: bold;">المشاعر السلبية</div>
-            <div style="font-size: 20px; font-weight: 900; color: #dc2626; margin-top: 4px;">{$negPct}% <span style="font-size: 11px; font-weight: normal; color: #6b7280;">({$kpi['negative']})</span></div>
+            <div style="font-size: 12px; color: #991b1b; font-weight: 800;">المشاعر السلبية</div>
+            <div style="font-size: 24px; font-weight: 900; color: #dc2626; margin-top: 4px;">{$negPct}% <span style="font-size: 12px; font-weight: 700; color: #991b1b;">({$kpi['negative']})</span></div>
         </div>
     </div>
 
     <!-- Monitored Posts Table -->
-    <div style="margin-top: 15px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <h3 style="margin: 0; font-size: 13px; font-weight: 900; color: #111827;">سجل المنشورات والرصد التفصيلي</h3>
-            <span style="font-size: 10px; color: #6b7280;">{$articlesCountLabel} منشور مرصود</span>
+    <div style="margin-top: 18px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h3 style="margin: 0; font-size: 15px; font-weight: 900; color: #0f172a;">سجل المنشورات والرصد التفصيلي</h3>
+            <span style="font-size: 12px; color: #64748b; font-weight: 700;">{$articlesCountLabel} منشور مرصود</span>
         </div>
         <table>
             <thead>
                 <tr>
                     <th style="width: 35px;">#</th>
-                    <th style="width: 80px;">المنصة</th>
-                    <th style="width: 110px;">المؤلف</th>
+                    <th style="width: 85px;">المنصة</th>
+                    <th style="width: 120px;">المؤلف</th>
                     <th>محتوى المنشور أو التعليق</th>
-                    <th style="width: 75px; text-align: center;">المشاعر</th>
-                    <th style="width: 85px; text-align: center;">التاريخ</th>
+                    <th style="width: 80px; text-align: center;">المشاعر</th>
+                    <th style="width: 90px; text-align: center;">التاريخ</th>
                 </tr>
             </thead>
             <tbody>
@@ -835,9 +866,14 @@ class ReportGeneratorService
     {$commentsSection}
 
     <!-- Official Document Footer -->
-    <div style="border-top: 1px solid #e5e7eb; padding-top: 14px; margin-top: 24px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #9ca3af;">
-        <div>تم توليد هذا التقرير تلقائياً بواسطة نظام التحليل الذكي لمنصة مرآة © " . date('Y') . "</div>
-        <div style="font-weight: bold; color: {$primary};">منصة مرآة للرصد والاستشعار الإعلامي</div>
+    <div style="border-top: 2px solid #e2e8f0; padding-top: 16px; margin-top: 24px; display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; color: #475569;">
+        <div>
+            <div style="font-weight: 900; color: #0f172a; font-size: 13.5px; margin-bottom: 3px;">مرآة خفّاق | إحدى حلول شركة خفّاق للإعلام والتسويق والحلول الرقمية</div>
+            <div style="font-size: 12px; color: #64748b; font-weight: 700;">&copy; 2026 جميع الحقوق محفوظة لشركة خفّاق للإعلام والتسويق والحلول الرقمية</div>
+        </div>
+        <div style="text-align: left; font-size: 12px; font-weight: 800; color: #0f172a;">
+            رقم التقرير: <span dir="ltr">REF: SADA-{$report->id}</span> | إجمالي الصفحات: {$totalPages}
+        </div>
     </div>
 </body>
 </html>
