@@ -281,12 +281,60 @@ class ReportGeneratorService
             ];
         })->values()->all();
 
-        // 2. Metrics calculation
+        // 2. Metrics calculation: Reach, Views, Engagements, and Sentiments
         $total = $articles->count();
         $pos = $articles->where('sentiment', 'positive')->count();
         $neu = $articles->where('sentiment', 'neutral')->count();
         $neg = $articles->where('sentiment', 'negative')->count();
         $commentsCount = $comments->count();
+
+        $totalReach = 0;
+        $totalViews = 0;
+        $totalEngagement = 0;
+
+        foreach ($articles as $art) {
+            $raw = is_array($art->raw_data) ? $art->raw_data : [];
+            $v = (int) ($raw['views'] ?? 0);
+            $l = (int) ($raw['likes'] ?? 0);
+            $r = (int) ($raw['retweets'] ?? 0);
+            $rep = (int) ($raw['replies'] ?? 0);
+            $cCount = $art->relationLoaded('comments') ? $art->comments->count() : (int) ($raw['comments_count'] ?? 0);
+
+            // Article Engagement
+            $artEng = (int) ($raw['engagement'] ?? 0);
+            if ($artEng <= 0) {
+                $artEng = $l + $r + $rep + $cCount;
+            }
+            $totalEngagement += $artEng;
+
+            // Article Views
+            $totalViews += $v;
+
+            // Article Reach (Followers or Views, strictly authentic from platform)
+            $followers = (int) ($raw['followers'] ?? 0);
+            $explicitReach = $raw['reach'] ?? null;
+            $artReach = (int) ($raw['reach_count'] ?? (is_numeric($explicitReach) ? $explicitReach : 0));
+            if ($artReach <= 0) {
+                if ($followers > 0) {
+                    $artReach = $followers;
+                } elseif ($v > 0) {
+                    $artReach = $v;
+                } elseif ($l > 0) {
+                    $artReach = $l;
+                }
+            }
+            $totalReach += $artReach;
+        }
+
+        // Add comments engagement
+        $commentsLikes = (int) $comments->sum('likes_count');
+        $totalEngagement += ($commentsLikes + $commentsCount);
+
+        $formatMetric = function (int $n): string {
+            if ($n >= 1000000) return round($n / 1000000, 1) . 'M';
+            if ($n >= 1000) return round($n / 1000, 1) . 'K';
+            return number_format($n);
+        };
 
         $commentStats = [
             'total' => $commentsCount,
@@ -304,6 +352,12 @@ class ReportGeneratorService
                 'neutral' => $commentStats['neutral'],
                 'negative' => $commentStats['negative'],
                 'comments' => $commentsCount,
+                'total_reach' => $totalReach,
+                'formatted_reach' => $formatMetric($totalReach),
+                'total_views' => $totalViews,
+                'formatted_views' => $formatMetric($totalViews),
+                'total_engagement' => $totalEngagement,
+                'formatted_engagement' => $formatMetric($totalEngagement),
             ]
             : [
                 'total' => $total,
@@ -311,6 +365,12 @@ class ReportGeneratorService
                 'neutral' => $neu,
                 'negative' => $neg,
                 'comments' => $commentsCount,
+                'total_reach' => $totalReach,
+                'formatted_reach' => $formatMetric($totalReach),
+                'total_views' => $totalViews,
+                'formatted_views' => $formatMetric($totalViews),
+                'total_engagement' => $totalEngagement,
+                'formatted_engagement' => $formatMetric($totalEngagement),
             ];
 
         // 3. AI Executive Summary (if not already cached in parameters)
@@ -549,6 +609,10 @@ class ReportGeneratorService
             : "<div style='font-size: 38px; font-weight: 900; color: {$primary}; letter-spacing: 2px;'>{$companyName}</div>";
 
 
+        $reachFormatted = $stats['formatted_reach'] ?? (isset($stats['total_reach']) && $stats['total_reach'] > 0 ? ($stats['total_reach'] >= 1000 ? round($stats['total_reach'] / 1000, 1) . 'K' : $stats['total_reach']) : '0');
+        $viewsFormatted = $stats['formatted_views'] ?? (isset($stats['total_views']) && $stats['total_views'] > 0 ? ($stats['total_views'] >= 1000 ? round($stats['total_views'] / 1000, 1) . 'K' : $stats['total_views']) : '0');
+        $engFormatted = $stats['formatted_engagement'] ?? (isset($stats['total_engagement']) && $stats['total_engagement'] > 0 ? ($stats['total_engagement'] >= 1000 ? round($stats['total_engagement'] / 1000, 1) . 'K' : $stats['total_engagement']) : '0');
+
         $insightsHtml = '';
         foreach ($positiveInsights as $item) {
             $insightsHtml .= "<li style='margin-bottom: 4px; color: #166534;'>• " . htmlspecialchars($item, ENT_QUOTES, 'UTF-8') . "</li>";
@@ -587,6 +651,12 @@ class ReportGeneratorService
                 default => 'محايد',
             };
             $date = $article->created_at ? $article->created_at->format('Y-m-d') : '—';
+            $raw = is_array($article->raw_data) ? $article->raw_data : [];
+            $viewsVal = $raw['views'] ?? null;
+            $reachVal = $raw['reach'] ?? null;
+            $dispReach = $reachVal ?: ($viewsVal ? (is_numeric($viewsVal) && $viewsVal >= 1000 ? round($viewsVal / 1000, 1) . 'K' : $viewsVal) : '—');
+            $engVal = $raw['engagement'] ?? ($raw['likes'] ?? null);
+            $dispEng = $engVal ?: '—';
 
             $tableRows .= "
                 <tr style='border-bottom: 1px solid #e5e7eb;'>
@@ -594,6 +664,8 @@ class ReportGeneratorService
                     <td style='padding: 10px 10px; font-weight: bold; color: #111827; font-size: 12px;'>{$platform}</td>
                     <td style='padding: 10px 10px; color: #1e293b; font-weight: 700; font-size: 12px;'>{$author}</td>
                     <td style='padding: 10px 10px; color: #111827; font-size: 12.5px; line-height: 1.65;'>{$snippet}</td>
+                    <td style='padding: 10px 8px; text-align: center; font-weight: 800; color: #0f766e; font-size: 11.5px;'>{$dispReach}</td>
+                    <td style='padding: 10px 8px; text-align: center; font-weight: 800; color: #b45309; font-size: 11.5px;'>{$dispEng}</td>
                     <td style='padding: 10px 10px; text-align: center;'>
                         <span style='background: {$sBg}; color: {$sColor}; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800;'>{$sLabel}</span>
                     </td>
@@ -686,7 +758,7 @@ class ReportGeneratorService
                 font-weight: 700;
             }
             @bottom-left {
-                content: "رقم التقرير: REF: SADA-{$report->id}";
+                content: "رقم التقرير: REF: MIRAAH-{$report->id}";
                 font-family: 'Cairo', sans-serif;
                 font-size: 10px;
                 color: #0f766e;
@@ -768,12 +840,12 @@ class ReportGeneratorService
         <div style="display: flex; align-items: center; gap: 14px;">
             {$logoHtml}
             <div>
-                <h1 style="margin: 0; font-size: 24px; font-weight: 900; color: #0f172a;">مرآة خفّاق</h1>
+                <h1 style="margin: 0; font-size: 24px; font-weight: 900; color: #0f172a;">{$companyName}</h1>
                 <p style="margin: 3px 0 0 0; font-size: 13px; color: #475569; font-weight: 700;">منصة الرصد والتحليل الإعلامي وإدارة السمعة وصوت المستفيد</p>
             </div>
         </div>
         <div style="text-align: left; font-size: 12px; color: #475569; direction: rtl;">
-            <div style="font-weight: 900; color: {$primary}; font-size: 13px;">رقم التقرير: <span dir="ltr">REF: SADA-{$report->id}</span></div>
+            <div style="font-weight: 900; color: {$primary}; font-size: 13px;">رقم التقرير: <span dir="ltr">REF: MIRAAH-{$report->id}</span></div>
             <div style="margin-top: 3px; font-weight: 600;">تاريخ التقرير: " . now()->format('Y-m-d') . "</div>
             <div style="margin-top: 3px; font-weight: 800; color: #1e293b;">رقم الصفحة: 1 من {$totalPages}</div>
         </div>
@@ -820,21 +892,35 @@ class ReportGeneratorService
         </div>
     </div>
 
-    <!-- KPI Statistics Grid -->
+    <!-- Impact & Reach Statistics Grid (Hero Row) -->
+    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 12px;">
+        <div style="background: #f0fdfa; border: 1.5px solid #99f6e4; border-top: 4px solid {$primary}; border-radius: 12px; padding: 14px 16px; text-align: right;">
+            <div style="font-size: 12px; color: #0f766e; font-weight: 800;">الوصول التقديري (Total Reach)</div>
+            <div style="font-size: 26px; font-weight: 900; color: #115e59; margin-top: 4px; font-family: monospace;">{$reachFormatted}</div>
+            <div style="font-size: 11px; color: #134e4a; font-weight: 600; margin-top: 3px;">حجم الجمهور المحتمل المستهدف</div>
+        </div>
+        <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-top: 4px solid {$secondary}; border-radius: 12px; padding: 14px 16px; text-align: right;">
+            <div style="font-size: 12px; color: #92400e; font-weight: 800;">إجمالي التفاعل (Total Engagements)</div>
+            <div style="font-size: 26px; font-weight: 900; color: #b45309; margin-top: 4px; font-family: monospace;">{$engFormatted}</div>
+            <div style="font-size: 11px; color: #78350f; font-weight: 600; margin-top: 3px;">إعجابات، ردود، مشاركات، وتعليقات</div>
+        </div>
+    </div>
+
+    <!-- KPI Statistics Grid (Row 2: Sentiment Breakdown) -->
     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px;">
         <div class="kpi-card">
             <div style="font-size: 12px; color: #64748b; font-weight: 800;">{$kpiTotalLabel}</div>
             <div style="font-size: 24px; font-weight: 900; color: {$primary}; margin-top: 4px;">{$kpi['total']}</div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card" style="border-color: #bbf7d0; background: #f0fdf4;">
             <div style="font-size: 12px; color: #166534; font-weight: 800;">المشاعر الإيجابية</div>
             <div style="font-size: 24px; font-weight: 900; color: #16a34a; margin-top: 4px;">{$posPct}% <span style="font-size: 12px; font-weight: 700; color: #166534;">({$kpi['positive']})</span></div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card" style="border-color: #e2e8f0; background: #f8fafc;">
             <div style="font-size: 12px; color: #475569; font-weight: 800;">المشاعر المحايدة</div>
             <div style="font-size: 24px; font-weight: 900; color: #334155; margin-top: 4px;">{$neuPct}% <span style="font-size: 12px; font-weight: 700; color: #475569;">({$kpi['neutral']})</span></div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card" style="border-color: #fecaca; background: #fef2f2;">
             <div style="font-size: 12px; color: #991b1b; font-weight: 800;">المشاعر السلبية</div>
             <div style="font-size: 24px; font-weight: 900; color: #dc2626; margin-top: 4px;">{$negPct}% <span style="font-size: 12px; font-weight: 700; color: #991b1b;">({$kpi['negative']})</span></div>
         </div>
@@ -851,10 +937,12 @@ class ReportGeneratorService
                 <tr>
                     <th style="width: 35px;">#</th>
                     <th style="width: 85px;">المنصة</th>
-                    <th style="width: 120px;">المؤلف</th>
+                    <th style="width: 110px;">المؤلف</th>
                     <th>محتوى المنشور أو التعليق</th>
-                    <th style="width: 80px; text-align: center;">المشاعر</th>
-                    <th style="width: 90px; text-align: center;">التاريخ</th>
+                    <th style="width: 75px; text-align: center;">الوصول</th>
+                    <th style="width: 75px; text-align: center;">التفاعل</th>
+                    <th style="width: 75px; text-align: center;">المشاعر</th>
+                    <th style="width: 85px; text-align: center;">التاريخ</th>
                 </tr>
             </thead>
             <tbody>
@@ -872,7 +960,7 @@ class ReportGeneratorService
             <div style="font-size: 12px; color: #64748b; font-weight: 700;">&copy; 2026 جميع الحقوق محفوظة لشركة خفّاق للإعلام والتسويق والحلول الرقمية</div>
         </div>
         <div style="text-align: left; font-size: 12px; font-weight: 800; color: #0f172a;">
-            رقم التقرير: <span dir="ltr">REF: SADA-{$report->id}</span> | إجمالي الصفحات: {$totalPages}
+            رقم التقرير: <span dir="ltr">REF: MIRAAH-{$report->id}</span> | إجمالي الصفحات: {$totalPages}
         </div>
     </div>
 </body>

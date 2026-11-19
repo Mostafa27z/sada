@@ -403,7 +403,17 @@ class ApifyScraperService
                 }
             }
 
-            $reach = $this->formatReachMetric($views);
+            $followers = (int) (
+                $item['author']['followers']
+                ?? $item['author']['followersCount']
+                ?? $item['author']['followers_count']
+                ?? $item['user']['followers_count']
+                ?? 0
+            );
+
+            // Genuine Reach: actual author follower base if present, otherwise actual verified views
+            $reachCount = $followers > 0 ? $followers : ($views > 0 ? $views : 0);
+            $reach = $reachCount > 0 ? $this->formatReachMetric($reachCount) : null;
             $engagement = $likes > 0 ? (string) $likes : ($likes + $retweets + $replies > 0 ? (string) ($likes + $retweets + $replies) : null);
 
             $results[] = [
@@ -421,7 +431,9 @@ class ApifyScraperService
                 "likes" => $likes,
                 "retweets" => $retweets,
                 "replies" => $replies,
+                "followers" => $followers,
                 "reach" => $reach,
+                "reach_count" => $reachCount,
                 "engagement" => $engagement,
             ];
         }

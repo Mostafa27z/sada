@@ -91,31 +91,29 @@ class ArticleResource extends JsonResource
             };
         }
 
-        // Calculate reach count and impact level
+        // Calculate genuine reach count and impact level strictly from real data
         $views = isset($this->raw_data['views']) && is_numeric($this->raw_data['views']) ? (int)$this->raw_data['views'] : null;
         $likes = isset($this->raw_data['likes']) && is_numeric($this->raw_data['likes']) ? (int)$this->raw_data['likes'] : null;
+        $followers = isset($this->raw_data['followers']) && is_numeric($this->raw_data['followers']) ? (int)$this->raw_data['followers'] : null;
         $explicitReach = $this->raw_data['reach'] ?? null;
+        $reachCountRaw = $this->raw_data['reach_count'] ?? null;
 
-        $reachCount = null;
-        if ($explicitReach && is_numeric($explicitReach) && (int)$explicitReach > 0) {
+        $reachCount = 0;
+        if ($reachCountRaw && is_numeric($reachCountRaw) && (int)$reachCountRaw > 0) {
+            $reachCount = (int)$reachCountRaw;
+        } elseif ($followers && $followers > 0) {
+            $reachCount = $followers;
+        } elseif ($explicitReach && is_numeric($explicitReach) && (int)$explicitReach > 0) {
             $reachCount = (int)$explicitReach;
         } elseif ($views && $views > 0) {
             $reachCount = $views;
         } elseif ($likes && $likes > 0) {
-            $reachCount = (int)($likes * 35);
-        } else {
-            $hash = abs(crc32((string)($this->id . $this->title)));
-            $reachCount = match($platform) {
-                'web' => 12000 + ($hash % 85000),
-                'x' => 4000 + ($hash % 38000),
-                'tiktok' => 6000 + ($hash % 65000),
-                'instagram' => 3000 + ($hash % 28000),
-                'facebook' => 2500 + ($hash % 35000),
-                default => 3000 + ($hash % 25000),
-            };
+            $reachCount = $likes;
         }
 
-        $formattedReach = $reachCount >= 1000 ? round($reachCount / 1000, 1) . 'K' : (string)$reachCount;
+        $formattedReach = $reachCount > 0 
+            ? ($reachCount >= 1000 ? round($reachCount / 1000, 1) . 'K' : (string)$reachCount)
+            : '—';
         
         $impactLevel = 'متوسطة';
         if ($reachCount >= 50000) {
